@@ -2,9 +2,11 @@ use nice_plug::prelude::*;
 use std::sync::Arc;
 
 mod env;
+mod lfo;
 mod notes;
 mod osc;
 use env::{Adsr, AdsrSettings};
+use lfo::Lfo;
 use notes::NoteStack;
 use osc::MorphOsc;
 
@@ -15,6 +17,8 @@ pub struct Johnwave {
 
     osc: MorphOsc,
     env: Adsr,
+    /// Modulates Morph.
+    lfo: Lfo,
     /// Held keys, most recent last (last-note priority).
     notes: NoteStack,
     /// Frequency of the sounding note.
@@ -28,6 +32,16 @@ struct SynthParams {
     /// 0 = sine, 33% = triangle, 67% = saw, 100% = square.
     #[id = "morph"]
     pub morph: FloatParam,
+
+    /// LFO speed in Hz.
+    #[id = "lfo_rate"]
+    pub lfo_rate: FloatParam,
+    /// How far the LFO swings Morph. At 100% it moves ±100%, i.e. the whole range.
+    #[id = "lfo_depth"]
+    pub lfo_depth: FloatParam,
+    /// Restart the LFO cycle on each fresh (non-legato) note.
+    #[id = "lfo_retrig"]
+    pub lfo_retrigger: BoolParam,
 
     #[id = "attack"]
     pub attack: FloatParam,
@@ -82,6 +96,24 @@ impl Default for SynthParams {
                 .with_value_to_string(formatters::v2s_f32_percentage(0))
                 .with_string_to_value(formatters::s2v_f32_percentage()),
 
+            lfo_rate: FloatParam::new(
+                "LFO Rate",
+                1.0,
+                FloatRange::Skewed {
+                    min: 0.05,
+                    max: 20.0,
+                    factor: FloatRange::skew_factor(-2.0),
+                },
+            )
+            .with_unit(" Hz")
+            .with_value_to_string(formatters::v2s_f32_rounded(2)),
+            lfo_depth: FloatParam::new("LFO Depth", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 })
+                .with_smoother(SmoothingStyle::Linear(20.0))
+                .with_unit("%")
+                .with_value_to_string(formatters::v2s_f32_percentage(0))
+                .with_string_to_value(formatters::s2v_f32_percentage()),
+            lfo_retrigger: BoolParam::new("LFO Retrigger", true),
+
             attack: time_param("Attack", 5.0, 5_000.0),
             decay: time_param("Decay", 300.0, 5_000.0),
             sustain: FloatParam::new("Sustain", 0.7, FloatRange::Linear { min: 0.0, max: 1.0 })
@@ -110,6 +142,7 @@ impl Default for Johnwave {
             sample_rate: 44_100.0,
             osc: MorphOsc::default(),
             env: Adsr::default(),
+            lfo: Lfo::default(),
             notes: NoteStack::default(),
             freq: 440.0,
             velocity: Smoother::new(SmoothingStyle::Linear(5.0)),
@@ -129,6 +162,9 @@ impl Johnwave {
                 if !legato {
                     self.velocity.set_target(self.sample_rate, velocity);
                     self.env.trigger();
+                    if self.params.lfo_retrigger.value() {
+                        self.lfo.reset();
+                    }
                 }
             }
             NoteEvent::NoteOff { key, .. } => {
@@ -190,6 +226,7 @@ impl Plugin for Johnwave {
     fn reset(&mut self) {
         self.osc.reset();
         self.env.reset();
+        self.lfo.reset();
         self.notes.clear();
         self.velocity.reset(0.0);
     }
@@ -212,7 +249,10 @@ impl Plugin for Johnwave {
                 next_event = context.next_event();
             }
 
-            let morph = self.params.morph.smoothed.next();
+            // Knob position plus LFO swing. The oscillator clamps the result to 0..=1.
+            let lfo = self.lfo.next(self.params.lfo_rate.value(), self.sample_rate);
+            let morph =
+                self.params.morph.smoothed.next() + lfo * self.params.lfo_depth.smoothed.next();
             let osc = self.osc.next(self.freq, self.sample_rate, morph);
             let env = self.env.next(&self.adsr_settings(), self.sample_rate);
 
