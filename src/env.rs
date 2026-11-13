@@ -161,7 +161,7 @@ mod tests {
 
     #[test]
     fn zero_sustain_works_as_an_attack_decay_envelope() {
-        // How the Morph envelope uses it: peak at 1, decay to 0, hold at 0 while the
+        // How the Mod Env uses it: peak at 1, decay to 0, hold at 0 while the
         // key is down, and stay smooth when released mid-decay.
         let ad = AdsrSettings {
             attack_s: 0.005,

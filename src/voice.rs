@@ -1,10 +1,13 @@
 //! Voices: one complete copy of the sound engine per note that is playing.
 //!
 //! A `Voice` holds everything that differs from note to note: pitch, velocity, the
-//! oscillator's phase, both envelopes and its LFO. A `VoicePool` holds a fixed set of
-//! voices and decides which voice plays each new note.
+//! oscillator's phase, filter memory, both envelopes and its LFO. A `VoicePool` holds a
+//! fixed set of voices and decides which voice plays each new note.
+//!
+//! Signal path for one voice: oscillator → low-pass filter → volume envelope × velocity.
 
 use crate::env::{Adsr, AdsrSettings};
+use crate::filter::LowPass;
 use crate::lfo::Lfo;
 use crate::osc::MorphOsc;
 use nice_plug::prelude::{Smoother, SmoothingStyle};
@@ -17,9 +20,13 @@ pub struct VoiceParams {
     pub morph: f32,
     pub lfo_rate: f32,
     pub lfo_depth: f32,
-    pub morph_env_amount: f32,
+    pub mod_env_to_morph: f32,
+    pub cutoff_hz: f32,
+    pub resonance: f32,
+    /// How many octaves the Mod Env moves the cutoff at its peak (can be negative).
+    pub mod_env_to_cutoff_oct: f32,
     pub amp_env: AdsrSettings,
-    pub morph_env: AdsrSettings,
+    pub mod_env: AdsrSettings,
 }
 
 pub struct Voice {
@@ -32,8 +39,9 @@ pub struct Voice {
     freq: f32,
     velocity: Smoother<f32>,
     osc: MorphOsc,
+    filter: LowPass,
     amp_env: Adsr,
-    morph_env: Adsr,
+    mod_env: Adsr,
     lfo: Lfo,
 }
 
@@ -46,8 +54,9 @@ impl Default for Voice {
             freq: 440.0,
             velocity: Smoother::new(SmoothingStyle::Linear(5.0)),
             osc: MorphOsc::default(),
+            filter: LowPass::default(),
             amp_env: Adsr::default(),
-            morph_env: Adsr::default(),
+            mod_env: Adsr::default(),
             lfo: Lfo::default(),
         }
     }
@@ -62,12 +71,17 @@ impl Voice {
     /// Begin a note. `lfo` is the LFO state to start from: a fresh one to retrigger,
     /// or a copy of the free-running LFO to stay in step with it.
     pub fn start(&mut self, note: u8, velocity: f32, age: u64, lfo: Lfo, sample_rate: f32) {
+        // A silent voice starts with an empty filter. A voice that's still sounding keeps
+        // its filter memory, so the takeover doesn't click.
+        if !self.is_active() {
+            self.filter.reset();
+        }
         self.glide_to(note);
         self.held = true;
         self.age = age;
         self.velocity.set_target(sample_rate, velocity);
         self.amp_env.trigger();
-        self.morph_env.trigger();
+        self.mod_env.trigger();
         self.lfo = lfo;
     }
 
@@ -80,14 +94,15 @@ impl Voice {
     pub fn release(&mut self) {
         self.held = false;
         self.amp_env.release();
-        self.morph_env.release();
+        self.mod_env.release();
     }
 
     pub fn reset(&mut self) {
         self.held = false;
         self.osc.reset();
+        self.filter.reset();
         self.amp_env.reset();
-        self.morph_env.reset();
+        self.mod_env.reset();
         self.lfo.reset();
         self.velocity.reset(0.0);
     }
@@ -99,12 +114,17 @@ impl Voice {
         }
         // Morph = knob + LFO swing + envelope push. The oscillator clamps it to 0..=1.
         let lfo = self.lfo.next(p.lfo_rate, sample_rate);
-        let morph_env = self.morph_env.next(&p.morph_env, sample_rate);
-        let morph = p.morph + lfo * p.lfo_depth + morph_env * p.morph_env_amount;
+        let mod_env = self.mod_env.next(&p.mod_env, sample_rate);
+        let morph = p.morph + lfo * p.lfo_depth + mod_env * p.mod_env_to_morph;
 
         let osc = self.osc.next(self.freq, sample_rate, morph);
+
+        // Each octave of envelope amount doubles (or halves) the cutoff at the env's peak.
+        let cutoff = p.cutoff_hz * (p.mod_env_to_cutoff_oct * mod_env).exp2();
+        let filtered = self.filter.process(osc, cutoff, p.resonance, sample_rate);
+
         let amp = self.amp_env.next(&p.amp_env, sample_rate);
-        osc * amp * self.velocity.next()
+        filtered * amp * self.velocity.next()
     }
 }
 
@@ -179,14 +199,17 @@ mod tests {
         morph: 0.5,
         lfo_rate: 1.0,
         lfo_depth: 0.0,
-        morph_env_amount: 0.0,
+        mod_env_to_morph: 0.0,
+        cutoff_hz: 20_000.0,
+        resonance: 0.0,
+        mod_env_to_cutoff_oct: 0.0,
         amp_env: AdsrSettings {
             attack_s: 0.005,
             decay_s: 0.1,
             sustain: 0.7,
             release_s: 0.05,
         },
-        morph_env: AdsrSettings {
+        mod_env: AdsrSettings {
             attack_s: 0.001,
             decay_s: 0.5,
             sustain: 0.0,

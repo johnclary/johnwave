@@ -2,6 +2,7 @@ use nice_plug::prelude::*;
 use std::sync::Arc;
 
 mod env;
+mod filter;
 mod lfo;
 mod notes;
 mod osc;
@@ -54,13 +55,26 @@ struct SynthParams {
     #[id = "lfo_retrig"]
     pub lfo_retrigger: BoolParam,
 
-    /// How far the Morph envelope pushes Morph at its peak. Negative pushes toward sine.
+    /// Low-pass filter cutoff in Hz.
+    #[id = "cutoff"]
+    pub cutoff: FloatParam,
+    /// Peak at the cutoff: 0 = none, 1 = strong ringing (stops short of self-oscillation).
+    #[id = "resonance"]
+    pub resonance: FloatParam,
+
+    // The Mod Env is an attack/decay envelope that drives both Morph and Cutoff.
+    // (The "menv_" ids date from when it only drove Morph. Changing an id would
+    // break saved presets, so they stay.)
+    /// How far the Mod Env pushes Morph at its peak. Negative pushes toward sine.
     #[id = "menv_amt"]
-    pub morph_env_amount: FloatParam,
+    pub mod_env_to_morph: FloatParam,
+    /// How many octaves the Mod Env moves the cutoff at its peak. Negative closes it.
+    #[id = "menv_cut"]
+    pub mod_env_to_cutoff: FloatParam,
     #[id = "menv_att"]
-    pub morph_env_attack: FloatParam,
+    pub mod_env_attack: FloatParam,
     #[id = "menv_dec"]
-    pub morph_env_decay: FloatParam,
+    pub mod_env_decay: FloatParam,
 
     #[id = "attack"]
     pub attack: FloatParam,
@@ -134,8 +148,34 @@ impl Default for SynthParams {
                 .with_string_to_value(formatters::s2v_f32_percentage()),
             lfo_retrigger: BoolParam::new("LFO Retrigger", true),
 
-            morph_env_amount: FloatParam::new(
-                "Morph Env Amount",
+            cutoff: FloatParam::new(
+                "Cutoff",
+                20_000.0,
+                FloatRange::Skewed {
+                    min: 20.0,
+                    max: 20_000.0,
+                    factor: FloatRange::skew_factor(-2.0),
+                },
+            )
+            .with_smoother(SmoothingStyle::Logarithmic(20.0))
+            .with_value_to_string(formatters::v2s_f32_hz_then_khz(0))
+            .with_string_to_value(formatters::s2v_f32_hz_then_khz()),
+            resonance: FloatParam::new("Resonance", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 })
+                .with_smoother(SmoothingStyle::Linear(20.0))
+                .with_unit("%")
+                .with_value_to_string(formatters::v2s_f32_percentage(0))
+                .with_string_to_value(formatters::s2v_f32_percentage()),
+
+            mod_env_to_cutoff: FloatParam::new(
+                "Mod Env to Cutoff",
+                0.0,
+                FloatRange::Linear { min: -6.0, max: 6.0 },
+            )
+            .with_smoother(SmoothingStyle::Linear(20.0))
+            .with_unit(" oct")
+            .with_value_to_string(Arc::new(|oct| format!("{oct:+.1}"))),
+            mod_env_to_morph: FloatParam::new(
+                "Mod Env to Morph",
                 0.0,
                 FloatRange::Linear { min: -1.0, max: 1.0 },
             )
@@ -143,8 +183,8 @@ impl Default for SynthParams {
             .with_unit("%")
             .with_value_to_string(formatters::v2s_f32_percentage(0))
             .with_string_to_value(formatters::s2v_f32_percentage()),
-            morph_env_attack: time_param("Morph Env Attack", 1.0, 5_000.0),
-            morph_env_decay: time_param("Morph Env Decay", 500.0, 10_000.0),
+            mod_env_attack: time_param("Mod Env Attack", 1.0, 5_000.0),
+            mod_env_decay: time_param("Mod Env Decay", 500.0, 10_000.0),
 
             attack: time_param("Attack", 5.0, 5_000.0),
             decay: time_param("Decay", 300.0, 5_000.0),
@@ -245,10 +285,10 @@ impl Johnwave {
 
     /// Attack, then decay to 0 and stay there. Releasing the key mid-decay carries on at
     /// the same speed, because the release time is set equal to the decay time.
-    fn morph_env_settings(&self) -> AdsrSettings {
-        let decay_s = self.params.morph_env_decay.value() / 1000.0;
+    fn mod_env_settings(&self) -> AdsrSettings {
+        let decay_s = self.params.mod_env_decay.value() / 1000.0;
         AdsrSettings {
-            attack_s: self.params.morph_env_attack.value() / 1000.0,
+            attack_s: self.params.mod_env_attack.value() / 1000.0,
             decay_s,
             sustain: 0.0,
             release_s: decay_s,
@@ -330,9 +370,12 @@ impl Plugin for Johnwave {
                 morph: self.params.morph.smoothed.next(),
                 lfo_rate,
                 lfo_depth: self.params.lfo_depth.smoothed.next(),
-                morph_env_amount: self.params.morph_env_amount.smoothed.next(),
+                mod_env_to_morph: self.params.mod_env_to_morph.smoothed.next(),
+                cutoff_hz: self.params.cutoff.smoothed.next(),
+                resonance: self.params.resonance.smoothed.next(),
+                mod_env_to_cutoff_oct: self.params.mod_env_to_cutoff.smoothed.next(),
                 amp_env: self.adsr_settings(),
-                morph_env: self.morph_env_settings(),
+                mod_env: self.mod_env_settings(),
             };
 
             let out = self.voices.next(&p, self.sample_rate) * self.params.gain.smoothed.next();
