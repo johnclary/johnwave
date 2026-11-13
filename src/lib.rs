@@ -5,33 +5,41 @@ mod env;
 mod lfo;
 mod notes;
 mod osc;
-use env::{Adsr, AdsrSettings};
+mod voice;
+use env::AdsrSettings;
 use lfo::Lfo;
 use notes::NoteStack;
-use osc::MorphOsc;
+use voice::{VoiceParams, VoicePool};
 
-/// Monophonic synth with a wave-morphing oscillator.
+/// Wave-morphing synth: 8-voice polyphonic, or mono with legato.
 pub struct Johnwave {
     params: Arc<SynthParams>,
     sample_rate: f32,
 
-    osc: MorphOsc,
-    /// Volume envelope.
-    env: Adsr,
-    /// Modulates Morph.
-    lfo: Lfo,
-    /// Modulates Morph. An attack/decay envelope: the ADSR with sustain fixed at 0.
-    morph_env: Adsr,
-    /// Held keys, most recent last (last-note priority).
+    voices: VoicePool,
+    /// Held keys, most recent last. Only used in mono mode (last-note priority).
     notes: NoteStack,
-    /// Frequency of the sounding note.
-    freq: f32,
-    /// Note loudness from velocity, smoothed so a retrigger at a new velocity can't click.
-    velocity: Smoother<f32>,
+    /// An LFO that always runs. With retrigger off, each new note copies its position,
+    /// so every voice wobbles in step.
+    free_lfo: Lfo,
+    /// The mode in effect last sample, to detect when the Voice Mode switch changes.
+    mode: VoiceMode,
+}
+
+#[derive(Enum, PartialEq, Clone, Copy)]
+enum VoiceMode {
+    #[id = "poly"]
+    Poly,
+    #[id = "mono"]
+    #[name = "Mono (legato)"]
+    Mono,
 }
 
 #[derive(Params)]
 struct SynthParams {
+    #[id = "voice_mode"]
+    pub voice_mode: EnumParam<VoiceMode>,
+
     /// 0 = sine, 33% = triangle, 67% = saw, 100% = square.
     #[id = "morph"]
     pub morph: FloatParam,
@@ -101,6 +109,7 @@ fn time_param(name: &str, default_ms: f32, max_ms: f32) -> FloatParam {
 impl Default for SynthParams {
     fn default() -> Self {
         Self {
+            voice_mode: EnumParam::new("Voice Mode", VoiceMode::Poly),
             morph: FloatParam::new("Morph", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 })
                 .with_smoother(SmoothingStyle::Linear(20.0))
                 .with_unit("%")
@@ -163,13 +172,10 @@ impl Default for Johnwave {
         Self {
             params: Arc::new(SynthParams::default()),
             sample_rate: 44_100.0,
-            osc: MorphOsc::default(),
-            env: Adsr::default(),
-            lfo: Lfo::default(),
-            morph_env: Adsr::default(),
+            voices: VoicePool::default(),
             notes: NoteStack::default(),
-            freq: 440.0,
-            velocity: Smoother::new(SmoothingStyle::Linear(5.0)),
+            free_lfo: Lfo::default(),
+            mode: VoiceMode::Poly,
         }
     }
 }
@@ -179,31 +185,52 @@ impl Johnwave {
         match event {
             NoteEvent::NoteOn { key, velocity, .. } => {
                 let note = key.number_or_middle_c();
-                let legato = self.notes.top().is_some();
-                self.notes.push(note);
-                self.freq = util::midi_key_to_freq(note);
-                // Legato (another key still held): glide pitch only. Fresh press: retrigger.
-                if !legato {
-                    self.velocity.set_target(self.sample_rate, velocity);
-                    self.env.trigger();
-                    self.morph_env.trigger();
-                    if self.params.lfo_retrigger.value() {
-                        self.lfo.reset();
+                let lfo = self.lfo_for_new_note();
+                match self.mode {
+                    VoiceMode::Poly => self.voices.note_on(note, velocity, lfo, self.sample_rate),
+                    VoiceMode::Mono => {
+                        let legato = self.notes.top().is_some();
+                        self.notes.push(note);
+                        // Another key still held: change pitch only. Fresh press: retrigger.
+                        if legato {
+                            self.voices.mono().glide_to(note);
+                        } else {
+                            self.voices
+                                .mono()
+                                .start(note, velocity, 0, lfo, self.sample_rate);
+                        }
                     }
                 }
             }
             NoteEvent::NoteOff { key, .. } => {
-                self.notes.remove(key.number_or_middle_c());
-                match self.notes.top() {
-                    // Fall back to the previously held key without retriggering.
-                    Some(prev) => self.freq = util::midi_key_to_freq(prev),
-                    None => {
-                        self.env.release();
-                        self.morph_env.release();
+                let note = key.number_or_middle_c();
+                match self.mode {
+                    VoiceMode::Poly => self.voices.note_off(note),
+                    VoiceMode::Mono => {
+                        self.notes.remove(note);
+                        match self.notes.top() {
+                            // Fall back to the previously held key without retriggering.
+                            Some(prev) => self.voices.mono().glide_to(prev),
+                            None => self.voices.mono().release(),
+                        }
                     }
                 }
             }
+            // The DAW wants these notes cut off immediately (e.g. a choke group).
+            NoteEvent::Choke { .. } => {
+                self.voices.reset();
+                self.notes.clear();
+            }
             _ => (),
+        }
+    }
+
+    /// A fresh LFO when retriggering, otherwise a copy of the always-running one.
+    fn lfo_for_new_note(&self) -> Lfo {
+        if self.params.lfo_retrigger.value() {
+            Lfo::default()
+        } else {
+            self.free_lfo.clone()
         }
     }
 
@@ -264,12 +291,9 @@ impl Plugin for Johnwave {
     }
 
     fn reset(&mut self) {
-        self.osc.reset();
-        self.env.reset();
-        self.lfo.reset();
-        self.morph_env.reset();
+        self.voices.reset();
         self.notes.clear();
-        self.velocity.reset(0.0);
+        self.free_lfo.reset();
     }
 
     fn process(
@@ -279,6 +303,15 @@ impl Plugin for Johnwave {
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         let mut next_event = context.next_event();
+
+        // Switching between Poly and Mono releases whatever was playing, so no voice
+        // gets stuck on.
+        let mode = self.params.voice_mode.value();
+        if mode != self.mode {
+            self.voices.release_all();
+            self.notes.clear();
+            self.mode = mode;
+        }
 
         for (sample_id, channel_samples) in buffer.iter_samples().enumerate() {
             // Apply all events scheduled at or before this sample.
@@ -290,18 +323,19 @@ impl Plugin for Johnwave {
                 next_event = context.next_event();
             }
 
-            // Morph = knob + LFO swing + envelope push. The oscillator clamps it to 0..=1.
-            let lfo = self.lfo.next(self.params.lfo_rate.value(), self.sample_rate);
-            let morph_env = self
-                .morph_env
-                .next(&self.morph_env_settings(), self.sample_rate);
-            let morph = self.params.morph.smoothed.next()
-                + lfo * self.params.lfo_depth.smoothed.next()
-                + morph_env * self.params.morph_env_amount.smoothed.next();
-            let osc = self.osc.next(self.freq, self.sample_rate, morph);
-            let env = self.env.next(&self.adsr_settings(), self.sample_rate);
+            // Read every knob once per sample, then share the values with all voices.
+            let lfo_rate = self.params.lfo_rate.value();
+            self.free_lfo.next(lfo_rate, self.sample_rate);
+            let p = VoiceParams {
+                morph: self.params.morph.smoothed.next(),
+                lfo_rate,
+                lfo_depth: self.params.lfo_depth.smoothed.next(),
+                morph_env_amount: self.params.morph_env_amount.smoothed.next(),
+                amp_env: self.adsr_settings(),
+                morph_env: self.morph_env_settings(),
+            };
 
-            let out = osc * env * self.velocity.next() * self.params.gain.smoothed.next();
+            let out = self.voices.next(&p, self.sample_rate) * self.params.gain.smoothed.next();
             for sample in channel_samples {
                 *sample = out;
             }

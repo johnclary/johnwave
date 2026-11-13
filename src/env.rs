@@ -59,6 +59,11 @@ impl Adsr {
         }
     }
 
+    /// True once the note has fully faded out (or never started).
+    pub fn is_idle(&self) -> bool {
+        self.stage == Stage::Idle
+    }
+
     pub fn reset(&mut self) {
         self.stage = Stage::Idle;
         self.level = 0.0;

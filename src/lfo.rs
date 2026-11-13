@@ -2,7 +2,7 @@
 
 use std::f32::consts::TAU;
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Lfo {
     /// Position in the current cycle, always in `[0, 1)`.
     phase: f32,

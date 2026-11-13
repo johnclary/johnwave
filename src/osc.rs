@@ -43,13 +43,18 @@ impl MorphOsc {
 
 /// The morph blend at phase `p`. A pure function, so it's easy to test.
 fn shape(p: f32, dt: f32, morph: f32) -> f32 {
-    let shapes = [sine(p), triangle(p), saw(p, dt), square(p, dt)];
-
     // Split 0..=1 into three segments: [sine→tri], [tri→saw], [saw→square].
     let pos = morph.clamp(0.0, 1.0) * 3.0;
     let i = (pos as usize).min(2);
     let t = pos - i as f32;
-    shapes[i] + (shapes[i + 1] - shapes[i]) * t
+
+    // Only calculate the two shapes being blended.
+    let (a, b) = match i {
+        0 => (sine(p), triangle(p)),
+        1 => (triangle(p), saw(p, dt)),
+        _ => (saw(p, dt), square(p, dt)),
+    };
+    a + (b - a) * t
 }
 
 fn sine(p: f32) -> f32 {
