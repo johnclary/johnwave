@@ -49,8 +49,12 @@ struct SynthParams {
     #[id = "lfo_rate"]
     pub lfo_rate: FloatParam,
     /// How far the LFO swings Morph. At 100% it moves ±100%, i.e. the whole range.
+    /// (Shown as "LFO to Morph". The id is from when it was called "LFO Depth".)
     #[id = "lfo_depth"]
-    pub lfo_depth: FloatParam,
+    pub lfo_to_morph: FloatParam,
+    /// How many octaves the LFO swings the cutoff up and down.
+    #[id = "lfo_cut"]
+    pub lfo_to_cutoff: FloatParam,
     /// Restart the LFO cycle on each fresh (non-legato) note.
     #[id = "lfo_retrig"]
     pub lfo_retrigger: BoolParam,
@@ -147,7 +151,7 @@ impl Default for SynthParams {
             )
             .with_unit(" Hz")
             .with_value_to_string(formatters::v2s_f32_rounded(2)),
-            lfo_depth: FloatParam::new("LFO Depth", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 })
+            lfo_to_morph: FloatParam::new("LFO to Morph", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 })
                 .with_smoother(SmoothingStyle::Linear(20.0))
                 .with_unit("%")
                 .with_value_to_string(formatters::v2s_f32_percentage(0))
@@ -174,6 +178,14 @@ impl Default for SynthParams {
                 .with_value_to_string(formatters::v2s_f32_percentage(0))
                 .with_string_to_value(formatters::s2v_f32_percentage()),
 
+            lfo_to_cutoff: FloatParam::new(
+                "LFO to Cutoff",
+                0.0,
+                FloatRange::Linear { min: -4.0, max: 4.0 },
+            )
+            .with_smoother(SmoothingStyle::Linear(20.0))
+            .with_unit(" oct")
+            .with_value_to_string(Arc::new(|oct| format!("{oct:+.1}"))),
             mod_env_to_cutoff: FloatParam::new(
                 "Mod Env to Cutoff",
                 0.0,
@@ -391,7 +403,8 @@ impl Plugin for Johnwave {
                 morph: self.params.morph.smoothed.next(),
                 lfo_rate,
                 shared_lfo: shared_lfo_on.then_some(shared),
-                lfo_depth: self.params.lfo_depth.smoothed.next(),
+                lfo_to_morph: self.params.lfo_to_morph.smoothed.next(),
+                lfo_to_cutoff_oct: self.params.lfo_to_cutoff.smoothed.next(),
                 mod_env_to_morph: self.params.mod_env_to_morph.smoothed.next(),
                 cutoff_hz: self.params.cutoff.smoothed.next(),
                 resonance: self.params.resonance.smoothed.next(),

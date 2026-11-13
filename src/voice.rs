@@ -22,7 +22,9 @@ pub struct VoiceParams {
     /// With LFO Retrigger off: the shared LFO's output this sample, used by every voice
     /// so they all move together. With retrigger on: `None`, and each voice runs its own.
     pub shared_lfo: Option<f32>,
-    pub lfo_depth: f32,
+    pub lfo_to_morph: f32,
+    /// How many octaves the LFO swings the cutoff (can be negative, which flips it).
+    pub lfo_to_cutoff_oct: f32,
     pub mod_env_to_morph: f32,
     pub cutoff_hz: f32,
     pub resonance: f32,
@@ -118,12 +120,14 @@ impl Voice {
         let own_lfo = self.lfo.next(p.lfo_rate, sample_rate);
         let lfo = p.shared_lfo.unwrap_or(own_lfo);
         let mod_env = self.mod_env.next(&p.mod_env, sample_rate);
-        let morph = p.morph + lfo * p.lfo_depth + mod_env * p.mod_env_to_morph;
+        let morph = p.morph + lfo * p.lfo_to_morph + mod_env * p.mod_env_to_morph;
 
         let osc = self.osc.next(self.freq, sample_rate, morph);
 
-        // Each octave of envelope amount doubles (or halves) the cutoff at the env's peak.
-        let cutoff = p.cutoff_hz * (p.mod_env_to_cutoff_oct * mod_env).exp2();
+        // Cutoff = knob, moved by the Mod Env and the LFO. Working in octaves means each
+        // +1 doubles the cutoff and each −1 halves it, which sounds even across the range.
+        let octaves = p.mod_env_to_cutoff_oct * mod_env + p.lfo_to_cutoff_oct * lfo;
+        let cutoff = p.cutoff_hz * octaves.exp2();
         let filtered = self.filter.process(osc, cutoff, p.resonance, sample_rate);
 
         let amp = self.amp_env.next(&p.amp_env, sample_rate);
@@ -202,7 +206,8 @@ mod tests {
         morph: 0.5,
         lfo_rate: 1.0,
         shared_lfo: None,
-        lfo_depth: 0.0,
+        lfo_to_morph: 0.0,
+        lfo_to_cutoff_oct: 0.0,
         mod_env_to_morph: 0.0,
         cutoff_hz: 20_000.0,
         resonance: 0.0,
@@ -245,6 +250,33 @@ mod tests {
         let mut notes: Vec<u8> = pool.voices.iter().filter(|v| v.held).map(|v| v.note).collect();
         notes.sort();
         notes
+    }
+
+    /// How bright a voice sounds: the RMS of the sample-to-sample change, which grows with
+    /// high-frequency content.
+    fn brightness(p: &VoiceParams) -> f32 {
+        let mut v = Voice::default();
+        v.start(45, 1.0, 1, SR);
+        let out: Vec<f32> = (0..(0.3 * SR) as usize).map(|_| v.next(p, SR)).collect();
+        let diffs: Vec<f32> = out.windows(2).map(|w| w[1] - w[0]).collect();
+        (diffs.iter().map(|d| d * d).sum::<f32>() / diffs.len() as f32).sqrt()
+    }
+
+    #[test]
+    fn lfo_moves_the_cutoff_both_ways() {
+        // A square through a 300 Hz filter, with the shared LFO held at its peak (+1).
+        let with = |octaves: f32| VoiceParams {
+            morph: 1.0,
+            cutoff_hz: 300.0,
+            shared_lfo: Some(1.0),
+            lfo_to_cutoff_oct: octaves,
+            ..PARAMS
+        };
+        let opened = brightness(&with(4.0)); // cutoff pushed up to 4.8 kHz
+        let plain = brightness(&with(0.0));
+        let closed = brightness(&with(-4.0)); // pushed down to ~19 Hz
+        assert!(opened > plain * 2.0, "opened {opened} vs plain {plain}");
+        assert!(closed < plain * 0.5, "closed {closed} vs plain {plain}");
     }
 
     #[test]
