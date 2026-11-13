@@ -19,6 +19,9 @@ pub const NUM_VOICES: usize = 8;
 pub struct VoiceParams {
     pub morph: f32,
     pub lfo_rate: f32,
+    /// With LFO Retrigger off: the shared LFO's output this sample, used by every voice
+    /// so they all move together. With retrigger on: `None`, and each voice runs its own.
+    pub shared_lfo: Option<f32>,
     pub lfo_depth: f32,
     pub mod_env_to_morph: f32,
     pub cutoff_hz: f32,
@@ -68,9 +71,8 @@ impl Voice {
         !self.amp_env.is_idle()
     }
 
-    /// Begin a note. `lfo` is the LFO state to start from: a fresh one to retrigger,
-    /// or a copy of the free-running LFO to stay in step with it.
-    pub fn start(&mut self, note: u8, velocity: f32, age: u64, lfo: Lfo, sample_rate: f32) {
+    /// Begin a note. The voice's own LFO restarts (used when LFO Retrigger is on).
+    pub fn start(&mut self, note: u8, velocity: f32, age: u64, sample_rate: f32) {
         // A silent voice starts with an empty filter. A voice that's still sounding keeps
         // its filter memory, so the takeover doesn't click.
         if !self.is_active() {
@@ -82,7 +84,7 @@ impl Voice {
         self.velocity.set_target(sample_rate, velocity);
         self.amp_env.trigger();
         self.mod_env.trigger();
-        self.lfo = lfo;
+        self.lfo.reset();
     }
 
     /// Change pitch without retriggering anything (mono legato).
@@ -113,7 +115,8 @@ impl Voice {
             return 0.0;
         }
         // Morph = knob + LFO swing + envelope push. The oscillator clamps it to 0..=1.
-        let lfo = self.lfo.next(p.lfo_rate, sample_rate);
+        let own_lfo = self.lfo.next(p.lfo_rate, sample_rate);
+        let lfo = p.shared_lfo.unwrap_or(own_lfo);
         let mod_env = self.mod_env.next(&p.mod_env, sample_rate);
         let morph = p.morph + lfo * p.lfo_depth + mod_env * p.mod_env_to_morph;
 
@@ -137,10 +140,10 @@ pub struct VoicePool {
 
 impl VoicePool {
     /// Play a note on a free voice, taking one over if all 8 are busy.
-    pub fn note_on(&mut self, note: u8, velocity: f32, lfo: Lfo, sample_rate: f32) {
+    pub fn note_on(&mut self, note: u8, velocity: f32, sample_rate: f32) {
         self.started += 1;
         let i = self.pick_voice(note);
-        self.voices[i].start(note, velocity, self.started, lfo, sample_rate);
+        self.voices[i].start(note, velocity, self.started, sample_rate);
     }
 
     /// Which voice should play `note`, in order of preference:
@@ -198,6 +201,7 @@ mod tests {
     const PARAMS: VoiceParams = VoiceParams {
         morph: 0.5,
         lfo_rate: 1.0,
+        shared_lfo: None,
         lfo_depth: 0.0,
         mod_env_to_morph: 0.0,
         cutoff_hz: 20_000.0,
@@ -218,7 +222,7 @@ mod tests {
     };
 
     fn on(pool: &mut VoicePool, note: u8) {
-        pool.note_on(note, 1.0, Lfo::default(), SR);
+        pool.note_on(note, 1.0, SR);
     }
 
     fn run(pool: &mut VoicePool, seconds: f32) -> Vec<f32> {

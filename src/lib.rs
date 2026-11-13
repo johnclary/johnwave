@@ -8,7 +8,7 @@ mod notes;
 mod osc;
 mod voice;
 use env::AdsrSettings;
-use lfo::Lfo;
+use lfo::{Lfo, SyncDivision};
 use notes::NoteStack;
 use voice::{VoiceParams, VoicePool};
 
@@ -20,8 +20,8 @@ pub struct Johnwave {
     voices: VoicePool,
     /// Held keys, most recent last. Only used in mono mode (last-note priority).
     notes: NoteStack,
-    /// An LFO that always runs. With retrigger off, each new note copies its position,
-    /// so every voice wobbles in step.
+    /// An LFO that always runs. With retrigger off, every voice follows it, so they all
+    /// wobble in step (and, when synced, in time with the song).
     free_lfo: Lfo,
     /// The mode in effect last sample, to detect when the Voice Mode switch changes.
     mode: VoiceMode,
@@ -54,6 +54,12 @@ struct SynthParams {
     /// Restart the LFO cycle on each fresh (non-legato) note.
     #[id = "lfo_retrig"]
     pub lfo_retrigger: BoolParam,
+    /// Follow the DAW's tempo instead of the LFO Rate knob.
+    #[id = "lfo_sync"]
+    pub lfo_sync: BoolParam,
+    /// Cycle length when synced.
+    #[id = "lfo_div"]
+    pub lfo_division: EnumParam<SyncDivision>,
 
     /// Low-pass filter cutoff in Hz.
     #[id = "cutoff"]
@@ -147,6 +153,8 @@ impl Default for SynthParams {
                 .with_value_to_string(formatters::v2s_f32_percentage(0))
                 .with_string_to_value(formatters::s2v_f32_percentage()),
             lfo_retrigger: BoolParam::new("LFO Retrigger", true),
+            lfo_sync: BoolParam::new("LFO Sync", false),
+            lfo_division: EnumParam::new("LFO Sync Rate", SyncDivision::Quarter),
 
             cutoff: FloatParam::new(
                 "Cutoff",
@@ -225,9 +233,8 @@ impl Johnwave {
         match event {
             NoteEvent::NoteOn { key, velocity, .. } => {
                 let note = key.number_or_middle_c();
-                let lfo = self.lfo_for_new_note();
                 match self.mode {
-                    VoiceMode::Poly => self.voices.note_on(note, velocity, lfo, self.sample_rate),
+                    VoiceMode::Poly => self.voices.note_on(note, velocity, self.sample_rate),
                     VoiceMode::Mono => {
                         let legato = self.notes.top().is_some();
                         self.notes.push(note);
@@ -237,7 +244,7 @@ impl Johnwave {
                         } else {
                             self.voices
                                 .mono()
-                                .start(note, velocity, 0, lfo, self.sample_rate);
+                                .start(note, velocity, 0, self.sample_rate);
                         }
                     }
                 }
@@ -265,13 +272,26 @@ impl Johnwave {
         }
     }
 
-    /// A fresh LFO when retriggering, otherwise a copy of the always-running one.
-    fn lfo_for_new_note(&self) -> Lfo {
-        if self.params.lfo_retrigger.value() {
-            Lfo::default()
-        } else {
-            self.free_lfo.clone()
+    /// The LFO speed for this block: the Rate knob, or the note value at the DAW's
+    /// tempo when synced. When synced, the playing song and Retrigger off, the shared LFO
+    /// is also lined up with the song position, so its cycle always lands on the beat.
+    fn update_lfo_rate(&mut self, transport: &Transport) -> f32 {
+        if !self.params.lfo_sync.value() {
+            return self.params.lfo_rate.value();
         }
+        let division = self.params.lfo_division.value();
+        let bpm = transport.tempo.unwrap_or(120.0);
+        // Length of a bar in quarter notes: 4 in 4/4, 3 in 3/4, 3.5 in 7/8...
+        let bar_beats = match (transport.time_sig_numerator, transport.time_sig_denominator) {
+            (Some(num), Some(den)) if num > 0 && den > 0 => num as f64 * 4.0 / den as f64,
+            _ => 4.0,
+        };
+        if transport.playing && !self.params.lfo_retrigger.value() {
+            if let Some(pos) = transport.pos_beats() {
+                self.free_lfo.set_phase(division.phase_at(pos, bar_beats));
+            }
+        }
+        division.rate_hz(bpm, bar_beats)
     }
 
     fn adsr_settings(&self) -> AdsrSettings {
@@ -342,6 +362,8 @@ impl Plugin for Johnwave {
         _aux: &mut AuxiliaryBuffers,
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
+        let lfo_rate = self.update_lfo_rate(context.transport());
+        let shared_lfo_on = !self.params.lfo_retrigger.value();
         let mut next_event = context.next_event();
 
         // Switching between Poly and Mono releases whatever was playing, so no voice
@@ -364,11 +386,11 @@ impl Plugin for Johnwave {
             }
 
             // Read every knob once per sample, then share the values with all voices.
-            let lfo_rate = self.params.lfo_rate.value();
-            self.free_lfo.next(lfo_rate, self.sample_rate);
+            let shared = self.free_lfo.next(lfo_rate, self.sample_rate);
             let p = VoiceParams {
                 morph: self.params.morph.smoothed.next(),
                 lfo_rate,
+                shared_lfo: shared_lfo_on.then_some(shared),
                 lfo_depth: self.params.lfo_depth.smoothed.next(),
                 mod_env_to_morph: self.params.mod_env_to_morph.smoothed.next(),
                 cutoff_hz: self.params.cutoff.smoothed.next(),
