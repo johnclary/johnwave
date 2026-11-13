@@ -1,0 +1,21 @@
+[package]
+name = "johnwave"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+members = ["xtask"]
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+nice-plug = "0.4.2"
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+strip = "symbols"
