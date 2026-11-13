@@ -1,17 +1,17 @@
 use nice_plug::prelude::*;
-use std::f32::consts::TAU;
 use std::sync::Arc;
 
 mod notes;
+mod osc;
 use notes::NoteStack;
+use osc::MorphOsc;
 
-/// Monophonic synth. Step 1: a plain sine oscillator driven by MIDI.
+/// Monophonic synth with a wave-morphing oscillator.
 pub struct Johnwave {
     params: Arc<SynthParams>,
     sample_rate: f32,
 
-    /// Oscillator phase in `[0, 1)`.
-    phase: f32,
+    osc: MorphOsc,
     /// Held keys, most recent last (last-note priority).
     notes: NoteStack,
     /// Frequency of the sounding note.
@@ -22,6 +22,10 @@ pub struct Johnwave {
 
 #[derive(Params)]
 struct SynthParams {
+    /// 0 = sine, 33% = triangle, 67% = saw, 100% = square.
+    #[id = "morph"]
+    pub morph: FloatParam,
+
     #[id = "gain"]
     pub gain: FloatParam,
 }
@@ -29,6 +33,11 @@ struct SynthParams {
 impl Default for SynthParams {
     fn default() -> Self {
         Self {
+            morph: FloatParam::new("Morph", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 })
+                .with_smoother(SmoothingStyle::Linear(20.0))
+                .with_unit("%")
+                .with_value_to_string(formatters::v2s_f32_percentage(0))
+                .with_string_to_value(formatters::s2v_f32_percentage()),
             gain: FloatParam::new(
                 "Gain",
                 util::db_to_gain(-12.0),
@@ -47,7 +56,7 @@ impl Default for Johnwave {
         Self {
             params: Arc::new(SynthParams::default()),
             sample_rate: 44_100.0,
-            phase: 0.0,
+            osc: MorphOsc::default(),
             notes: NoteStack::default(),
             freq: 440.0,
             gate: Smoother::new(SmoothingStyle::Linear(5.0)),
@@ -112,7 +121,7 @@ impl Plugin for Johnwave {
     }
 
     fn reset(&mut self) {
-        self.phase = 0.0;
+        self.osc.reset();
         self.notes.clear();
         self.gate.reset(0.0);
     }
@@ -135,11 +144,8 @@ impl Plugin for Johnwave {
                 next_event = context.next_event();
             }
 
-            let osc = (self.phase * TAU).sin();
-            self.phase += self.freq / self.sample_rate;
-            if self.phase >= 1.0 {
-                self.phase -= 1.0;
-            }
+            let morph = self.params.morph.smoothed.next();
+            let osc = self.osc.next(self.freq, self.sample_rate, morph);
 
             let out = osc * self.gate.next() * self.params.gain.smoothed.next();
             for sample in channel_samples {
