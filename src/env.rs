@@ -155,6 +155,35 @@ mod tests {
     }
 
     #[test]
+    fn zero_sustain_works_as_an_attack_decay_envelope() {
+        // How the Morph envelope uses it: peak at 1, decay to 0, hold at 0 while the
+        // key is down, and stay smooth when released mid-decay.
+        let ad = AdsrSettings {
+            attack_s: 0.005,
+            decay_s: 0.2,
+            sustain: 0.0,
+            release_s: 0.2,
+        };
+        let mut env = Adsr::default();
+        env.trigger();
+        let mut out: Vec<f32> = (0..(0.1 * SR) as usize).map(|_| env.next(&ad, SR)).collect();
+        assert!(out.iter().any(|&x| x == 1.0), "never reached the peak");
+        env.release(); // let go halfway through the decay
+        out.extend((0..(0.5 * SR) as usize).map(|_| env.next(&ad, SR)));
+
+        let worst = out.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0, f32::max);
+        assert!(worst <= 1.0 / (ad.attack_s * SR) + 1e-6, "step of {worst}");
+        assert_eq!(env.stage, Stage::Idle);
+
+        // Held down instead: decays to ~0 and holds there.
+        env.trigger();
+        for _ in 0..SR as usize {
+            env.next(&ad, SR);
+        }
+        assert!(env.next(&ad, SR) < 1e-4);
+    }
+
+    #[test]
     fn never_jumps_even_when_retriggered_mid_release() {
         // Any stage boundary or retrigger should move smoothly, never in a step.
         // The fastest legal movement is the attack slope.

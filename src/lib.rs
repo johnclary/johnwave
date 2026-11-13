@@ -16,9 +16,12 @@ pub struct Johnwave {
     sample_rate: f32,
 
     osc: MorphOsc,
+    /// Volume envelope.
     env: Adsr,
     /// Modulates Morph.
     lfo: Lfo,
+    /// Modulates Morph. An attack/decay envelope: the ADSR with sustain fixed at 0.
+    morph_env: Adsr,
     /// Held keys, most recent last (last-note priority).
     notes: NoteStack,
     /// Frequency of the sounding note.
@@ -42,6 +45,14 @@ struct SynthParams {
     /// Restart the LFO cycle on each fresh (non-legato) note.
     #[id = "lfo_retrig"]
     pub lfo_retrigger: BoolParam,
+
+    /// How far the Morph envelope pushes Morph at its peak. Negative pushes toward sine.
+    #[id = "menv_amt"]
+    pub morph_env_amount: FloatParam,
+    #[id = "menv_att"]
+    pub morph_env_attack: FloatParam,
+    #[id = "menv_dec"]
+    pub morph_env_decay: FloatParam,
 
     #[id = "attack"]
     pub attack: FloatParam,
@@ -114,6 +125,18 @@ impl Default for SynthParams {
                 .with_string_to_value(formatters::s2v_f32_percentage()),
             lfo_retrigger: BoolParam::new("LFO Retrigger", true),
 
+            morph_env_amount: FloatParam::new(
+                "Morph Env Amount",
+                0.0,
+                FloatRange::Linear { min: -1.0, max: 1.0 },
+            )
+            .with_smoother(SmoothingStyle::Linear(20.0))
+            .with_unit("%")
+            .with_value_to_string(formatters::v2s_f32_percentage(0))
+            .with_string_to_value(formatters::s2v_f32_percentage()),
+            morph_env_attack: time_param("Morph Env Attack", 1.0, 5_000.0),
+            morph_env_decay: time_param("Morph Env Decay", 500.0, 10_000.0),
+
             attack: time_param("Attack", 5.0, 5_000.0),
             decay: time_param("Decay", 300.0, 5_000.0),
             sustain: FloatParam::new("Sustain", 0.7, FloatRange::Linear { min: 0.0, max: 1.0 })
@@ -143,6 +166,7 @@ impl Default for Johnwave {
             osc: MorphOsc::default(),
             env: Adsr::default(),
             lfo: Lfo::default(),
+            morph_env: Adsr::default(),
             notes: NoteStack::default(),
             freq: 440.0,
             velocity: Smoother::new(SmoothingStyle::Linear(5.0)),
@@ -162,6 +186,7 @@ impl Johnwave {
                 if !legato {
                     self.velocity.set_target(self.sample_rate, velocity);
                     self.env.trigger();
+                    self.morph_env.trigger();
                     if self.params.lfo_retrigger.value() {
                         self.lfo.reset();
                     }
@@ -172,7 +197,10 @@ impl Johnwave {
                 match self.notes.top() {
                     // Fall back to the previously held key without retriggering.
                     Some(prev) => self.freq = util::midi_key_to_freq(prev),
-                    None => self.env.release(),
+                    None => {
+                        self.env.release();
+                        self.morph_env.release();
+                    }
                 }
             }
             _ => (),
@@ -185,6 +213,18 @@ impl Johnwave {
             decay_s: self.params.decay.value() / 1000.0,
             sustain: self.params.sustain.value(),
             release_s: self.params.release.value() / 1000.0,
+        }
+    }
+
+    /// Attack, then decay to 0 and stay there. Releasing the key mid-decay carries on at
+    /// the same speed, because the release time is set equal to the decay time.
+    fn morph_env_settings(&self) -> AdsrSettings {
+        let decay_s = self.params.morph_env_decay.value() / 1000.0;
+        AdsrSettings {
+            attack_s: self.params.morph_env_attack.value() / 1000.0,
+            decay_s,
+            sustain: 0.0,
+            release_s: decay_s,
         }
     }
 }
@@ -227,6 +267,7 @@ impl Plugin for Johnwave {
         self.osc.reset();
         self.env.reset();
         self.lfo.reset();
+        self.morph_env.reset();
         self.notes.clear();
         self.velocity.reset(0.0);
     }
@@ -249,10 +290,14 @@ impl Plugin for Johnwave {
                 next_event = context.next_event();
             }
 
-            // Knob position plus LFO swing. The oscillator clamps the result to 0..=1.
+            // Morph = knob + LFO swing + envelope push. The oscillator clamps it to 0..=1.
             let lfo = self.lfo.next(self.params.lfo_rate.value(), self.sample_rate);
-            let morph =
-                self.params.morph.smoothed.next() + lfo * self.params.lfo_depth.smoothed.next();
+            let morph_env = self
+                .morph_env
+                .next(&self.morph_env_settings(), self.sample_rate);
+            let morph = self.params.morph.smoothed.next()
+                + lfo * self.params.lfo_depth.smoothed.next()
+                + morph_env * self.params.morph_env_amount.smoothed.next();
             let osc = self.osc.next(self.freq, self.sample_rate, morph);
             let env = self.env.next(&self.adsr_settings(), self.sample_rate);
 
