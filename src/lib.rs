@@ -1,8 +1,10 @@
 use nice_plug::prelude::*;
 use std::sync::Arc;
 
+mod env;
 mod notes;
 mod osc;
+use env::{Adsr, AdsrSettings};
 use notes::NoteStack;
 use osc::MorphOsc;
 
@@ -12,12 +14,13 @@ pub struct Johnwave {
     sample_rate: f32,
 
     osc: MorphOsc,
+    env: Adsr,
     /// Held keys, most recent last (last-note priority).
     notes: NoteStack,
     /// Frequency of the sounding note.
     freq: f32,
-    /// Temporary declicking gate. Replaced by the ADSR in step 4.
-    gate: Smoother<f32>,
+    /// Note loudness from velocity, smoothed so a retrigger at a new velocity can't click.
+    velocity: Smoother<f32>,
 }
 
 #[derive(Params)]
@@ -26,8 +29,48 @@ struct SynthParams {
     #[id = "morph"]
     pub morph: FloatParam,
 
+    #[id = "attack"]
+    pub attack: FloatParam,
+    #[id = "decay"]
+    pub decay: FloatParam,
+    #[id = "sustain"]
+    pub sustain: FloatParam,
+    #[id = "release"]
+    pub release: FloatParam,
+
     #[id = "gain"]
     pub gain: FloatParam,
+}
+
+/// An envelope time knob in milliseconds. It's skewed so the short times get more
+/// of the knob's travel.
+fn time_param(name: &str, default_ms: f32, max_ms: f32) -> FloatParam {
+    FloatParam::new(
+        name,
+        default_ms,
+        FloatRange::Skewed {
+            min: 1.0,
+            max: max_ms,
+            factor: FloatRange::skew_factor(-2.0),
+        },
+    )
+    .with_value_to_string(Arc::new(|ms| {
+        if ms < 1000.0 {
+            format!("{ms:.0} ms")
+        } else {
+            format!("{:.2} s", ms / 1000.0)
+        }
+    }))
+    .with_string_to_value(Arc::new(|s| {
+        let s = s.trim().to_lowercase();
+        if let Some(n) = s.strip_suffix("ms") {
+            n.trim().parse().ok()
+        } else if let Some(n) = s.strip_suffix('s') {
+            n.trim().parse::<f32>().ok().map(|secs| secs * 1000.0)
+        } else {
+            s.parse().ok()
+        }
+    }))
 }
 
 impl Default for SynthParams {
@@ -38,6 +81,15 @@ impl Default for SynthParams {
                 .with_unit("%")
                 .with_value_to_string(formatters::v2s_f32_percentage(0))
                 .with_string_to_value(formatters::s2v_f32_percentage()),
+
+            attack: time_param("Attack", 5.0, 5_000.0),
+            decay: time_param("Decay", 300.0, 5_000.0),
+            sustain: FloatParam::new("Sustain", 0.7, FloatRange::Linear { min: 0.0, max: 1.0 })
+                .with_unit("%")
+                .with_value_to_string(formatters::v2s_f32_percentage(0))
+                .with_string_to_value(formatters::s2v_f32_percentage()),
+            release: time_param("Release", 200.0, 10_000.0),
+
             gain: FloatParam::new(
                 "Gain",
                 util::db_to_gain(-12.0),
@@ -57,9 +109,10 @@ impl Default for Johnwave {
             params: Arc::new(SynthParams::default()),
             sample_rate: 44_100.0,
             osc: MorphOsc::default(),
+            env: Adsr::default(),
             notes: NoteStack::default(),
             freq: 440.0,
-            gate: Smoother::new(SmoothingStyle::Linear(5.0)),
+            velocity: Smoother::new(SmoothingStyle::Linear(5.0)),
         }
     }
 }
@@ -69,19 +122,33 @@ impl Johnwave {
         match event {
             NoteEvent::NoteOn { key, velocity, .. } => {
                 let note = key.number_or_middle_c();
+                let legato = self.notes.top().is_some();
                 self.notes.push(note);
                 self.freq = util::midi_key_to_freq(note);
-                self.gate.set_target(self.sample_rate, velocity);
+                // Legato (another key still held): glide pitch only. Fresh press: retrigger.
+                if !legato {
+                    self.velocity.set_target(self.sample_rate, velocity);
+                    self.env.trigger();
+                }
             }
             NoteEvent::NoteOff { key, .. } => {
                 self.notes.remove(key.number_or_middle_c());
                 match self.notes.top() {
                     // Fall back to the previously held key without retriggering.
                     Some(prev) => self.freq = util::midi_key_to_freq(prev),
-                    None => self.gate.set_target(self.sample_rate, 0.0),
+                    None => self.env.release(),
                 }
             }
             _ => (),
+        }
+    }
+
+    fn adsr_settings(&self) -> AdsrSettings {
+        AdsrSettings {
+            attack_s: self.params.attack.value() / 1000.0,
+            decay_s: self.params.decay.value() / 1000.0,
+            sustain: self.params.sustain.value(),
+            release_s: self.params.release.value() / 1000.0,
         }
     }
 }
@@ -122,8 +189,9 @@ impl Plugin for Johnwave {
 
     fn reset(&mut self) {
         self.osc.reset();
+        self.env.reset();
         self.notes.clear();
-        self.gate.reset(0.0);
+        self.velocity.reset(0.0);
     }
 
     fn process(
@@ -146,8 +214,9 @@ impl Plugin for Johnwave {
 
             let morph = self.params.morph.smoothed.next();
             let osc = self.osc.next(self.freq, self.sample_rate, morph);
+            let env = self.env.next(&self.adsr_settings(), self.sample_rate);
 
-            let out = osc * self.gate.next() * self.params.gain.smoothed.next();
+            let out = osc * env * self.velocity.next() * self.params.gain.smoothed.next();
             for sample in channel_samples {
                 *sample = out;
             }
