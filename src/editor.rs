@@ -184,13 +184,13 @@ fn waveform(ui: &mut egui::Ui, morph: f32) {
     // Neon look: two wide, faint copies of the line underneath make a glow, then the
     // bright line on top.
     let color = neon_color(morph);
-    for (width, strength) in [(9.0, 0.10), (5.0, 0.25)] {
+    for (width, strength) in [(13.0, 0.10), (9.0, 0.25)] {
         painter.add(egui::Shape::line(
             points.clone(),
             egui::Stroke::new(width, color.gamma_multiply(strength)),
         ));
     }
-    painter.add(egui::Shape::line(points, egui::Stroke::new(2.5, color)));
+    painter.add(egui::Shape::line(points, egui::Stroke::new(6.0, color)));
 }
 
 /// The wave's colour, sliding around the colour wheel as Morph goes from sine to square:
