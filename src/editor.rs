@@ -1,20 +1,21 @@
 //! The plugin window: a deliberately minimal egui UI.
 //!
 //! egui is "immediate mode": every frame, `ui()` describes the whole window from scratch
-//! ("a title, then three sliders"). egui works out the layout and handles the mouse. There's
+//! ("a title, then these sections of sliders"). egui works out the layout and handles the mouse. There's
 //! no widget tree to keep in sync. The window only reads and sets parameters. No sound
 //! logic lives here.
 
 use crate::SynthParams;
 use nice_plug::context::gui::GuiContext;
 use nice_plug::editor::dpi::LogicalSize;
+use nice_plug::prelude::{BoolParam, Enum, EnumParam, Param, ParamSetter};
 use nice_plug_egui::widgets::ParamSlider;
 use nice_plug_egui::{EguiEditorState, Frame, NiceEguiApp};
 use std::sync::Arc;
 
 /// Window size in points. On a Retina screen egui draws at twice this many pixels.
-pub const WIDTH: f64 = 340.0;
-pub const HEIGHT: f64 = 150.0;
+pub const WIDTH: f64 = MARGIN_X as f64 * 2.0 + COLUMN_WIDTH as f64 * 2.0 + COLUMN_GAP as f64;
+pub const HEIGHT: f64 = 560.0;
 
 pub fn default_state() -> Arc<EguiEditorState> {
     EguiEditorState::from_size(LogicalSize::new(WIDTH, HEIGHT), 1.0)
@@ -58,27 +59,183 @@ impl NiceEguiApp for JohnwaveEditor {
         let Some(gui_context) = &self.gui_context else {
             return;
         };
-        // A `ParamSetter` turns slider drags into parameter changes the DAW can see and
-        // record as automation.
+        // A `ParamSetter` turns clicks and drags into parameter changes the DAW can see
+        // and record as automation.
         let setter = gui_context.param_setter();
-        let params = &self.params;
+
+        // Padding around the edges of the window.
+        egui::Frame::new()
+            .inner_margin(egui::Margin::symmetric(MARGIN_X as i8, 12))
+            .show(ui, |ui| self.contents(ui, &setter));
+    }
+}
+
+impl JohnwaveEditor {
+    fn contents(&self, ui: &mut egui::Ui, setter: &ParamSetter) {
+        let p = &self.params;
 
         ui.heading("johnwave");
-        ui.add_space(8.0);
+        ui.add_space(4.0);
 
-        // A two-column grid: label on the left, slider on the right.
-        egui::Grid::new("params").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-            ui.label("Morph");
-            ui.add(ParamSlider::for_param(&params.morph, &setter));
-            ui.end_row();
+        // Two fixed-width columns side by side. Fixed, because each slider's value box
+        // changes width with its value ("5 ms" vs "10.00 s"), and the columns shouldn't
+        // shift or overlap when that happens.
+        ui.horizontal_top(|ui| {
+            column(ui, |ui| {
+                section(ui, "Voice", |ui| {
+                    ui.label("Mode");
+                    choice_buttons(ui, &p.voice_mode, &setter);
+                    ui.end_row();
+                    slider_row(ui, "Gain", &p.gain, &setter);
+                });
+                section(ui, "Oscillator", |ui| {
+                    slider_row(ui, "Morph", &p.morph, &setter);
+                });
+                section(ui, "Tuning", |ui| {
+                    slider_row(ui, "Coarse", &p.coarse, &setter);
+                    slider_row(ui, "Fine", &p.fine, &setter);
+                    slider_row(ui, "Bend Range", &p.bend_range, &setter);
+                });
+                section(ui, "Filter", |ui| {
+                    slider_row(ui, "Cutoff", &p.cutoff, &setter);
+                    slider_row(ui, "Resonance", &p.resonance, &setter);
+                });
+                section(ui, "Amp Envelope", |ui| {
+                    slider_row(ui, "Attack", &p.attack, &setter);
+                    slider_row(ui, "Decay", &p.decay, &setter);
+                    slider_row(ui, "Sustain", &p.sustain, &setter);
+                    slider_row(ui, "Release", &p.release, &setter);
+                });
+            });
+            ui.add_space(COLUMN_GAP);
+            column(ui, |ui| {
+                section(ui, "Mod Envelope", |ui| {
+                    slider_row(ui, "Attack", &p.mod_env_attack, &setter);
+                    slider_row(ui, "Decay", &p.mod_env_decay, &setter);
+                    slider_row(ui, "To Morph", &p.mod_env_to_morph, &setter);
+                    slider_row(ui, "To Cutoff", &p.mod_env_to_cutoff, &setter);
+                });
+                section(ui, "LFO", |ui| {
+                    let synced = p.lfo_sync.value();
+                    slider_row(ui, "Shape", &p.lfo_shape, &setter);
 
-            ui.label("Cutoff");
-            ui.add(ParamSlider::for_param(&params.cutoff, &setter));
-            ui.end_row();
+                    // Only one of Rate / Sync Rate is in charge, so grey out the other.
+                    ui.label("Rate");
+                    ui.add_enabled(!synced, slider(&p.lfo_rate, &setter));
+                    ui.end_row();
+                    ui.label("Sync Rate");
+                    ui.add_enabled_ui(synced, |ui| stepper(ui, &p.lfo_division, &setter));
+                    ui.end_row();
 
-            ui.label("LFO Shape");
-            ui.add(ParamSlider::for_param(&params.lfo_shape, &setter));
-            ui.end_row();
+                    ui.label("");
+                    ui.horizontal(|ui| {
+                        toggle_button(ui, "Sync", &p.lfo_sync, &setter);
+                        toggle_button(ui, "Retrigger", &p.lfo_retrigger, &setter);
+                    });
+                    ui.end_row();
+
+                    slider_row(ui, "To Morph", &p.lfo_to_morph, &setter);
+                    slider_row(ui, "To Cutoff", &p.lfo_to_cutoff, &setter);
+                });
+            });
         });
     }
+}
+
+/// Space around the window's edges, left and right.
+const MARGIN_X: f32 = 16.0;
+/// Each column: label (72) + gap + slider + value box, with room for the widest value.
+const COLUMN_WIDTH: f32 = 280.0;
+const COLUMN_GAP: f32 = 24.0;
+
+/// A column of sections that is always exactly `COLUMN_WIDTH` wide.
+fn column(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
+    ui.vertical(|ui| {
+        ui.set_width(COLUMN_WIDTH);
+        contents(ui);
+    });
+}
+
+/// How wide every slider is, so the columns line up.
+const SLIDER_WIDTH: f32 = 110.0;
+
+/// A titled block of rows: a small heading, then a label/control grid.
+fn section(ui: &mut egui::Ui, title: &str, rows: impl FnOnce(&mut egui::Ui)) {
+    ui.add_space(6.0);
+    ui.label(egui::RichText::new(title).strong());
+    egui::Grid::new(title)
+        .num_columns(2)
+        .spacing([10.0, 4.0])
+        .min_col_width(72.0)
+        .show(ui, rows);
+}
+
+fn slider<'a, P: Param>(param: &'a P, setter: &'a ParamSetter<'a>) -> ParamSlider<'a, P> {
+    ParamSlider::for_param(param, setter).with_width(SLIDER_WIDTH)
+}
+
+/// One grid row: label, then a slider.
+fn slider_row<P: Param>(ui: &mut egui::Ui, label: &str, param: &P, setter: &ParamSetter) {
+    ui.label(label);
+    ui.add(slider(param, setter));
+    ui.end_row();
+}
+
+/// Change a parameter the way the DAW expects: begin, set, end. The begin/end pair is
+/// what makes it one undo step and records it as automation.
+fn set<P: Param>(setter: &ParamSetter, param: &P, value: P::Plain) {
+    setter.begin_set_parameter(param);
+    setter.set_parameter(param, value);
+    setter.end_set_parameter(param);
+}
+
+/// An on/off button for a `BoolParam`. It looks pressed while on.
+fn toggle_button(ui: &mut egui::Ui, label: &str, param: &BoolParam, setter: &ParamSetter) {
+    let on = param.value();
+    if ui.selectable_label(on, label).clicked() {
+        set(setter, param, !on);
+    }
+}
+
+/// One button per option, side by side, for enums with only a few options.
+fn choice_buttons<T: Enum + PartialEq + 'static>(
+    ui: &mut egui::Ui,
+    param: &EnumParam<T>,
+    setter: &ParamSetter,
+) {
+    let current = param.value().to_index();
+    ui.horizontal(|ui| {
+        for (index, name) in T::variants().iter().enumerate() {
+            if ui.selectable_label(index == current, *name).clicked() && index != current {
+                set(setter, param, T::from_index(index));
+            }
+        }
+    });
+}
+
+/// `‹ value ›` buttons that step through an enum's options in order. Stops at the
+/// first and last option instead of wrapping around.
+fn stepper<T: Enum + PartialEq + 'static>(
+    ui: &mut egui::Ui,
+    param: &EnumParam<T>,
+    setter: &ParamSetter,
+) {
+    let current = param.value().to_index();
+    let last = T::variants().len() - 1;
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled(current > 0, egui::Button::new("‹"))
+            .clicked()
+        {
+            set(setter, param, T::from_index(current - 1));
+        }
+        // A fixed-width name, so the › button doesn't jump around as the text changes.
+        ui.add_sized([80.0, 18.0], egui::Label::new(T::variants()[current]));
+        if ui
+            .add_enabled(current < last, egui::Button::new("›"))
+            .clicked()
+        {
+            set(setter, param, T::from_index(current + 1));
+        }
+    });
 }
