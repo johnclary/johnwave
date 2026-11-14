@@ -1,6 +1,7 @@
 use nice_plug::prelude::*;
 use std::sync::Arc;
 
+mod editor;
 mod env;
 mod filter;
 mod lfo;
@@ -13,6 +14,8 @@ use lfo::{Lfo, SyncDivision};
 use modulation::{ModDest, ModSource, Routes};
 use notes::NoteStack;
 use voice::{VoiceParams, VoicePool};
+use editor::JohnwaveEditor;
+use nice_plug_egui::{EguiEditor, EguiEditorState, EguiNiceSettings, RepaintNotifier};
 
 /// Wave-morphing synth: 8-voice polyphonic, or mono with legato.
 pub struct Johnwave {
@@ -30,10 +33,12 @@ pub struct Johnwave {
     /// The pitch bend wheel, 0..1 with 0.5 = centred. Smoothed, because MIDI sends the
     /// wheel as a series of small jumps that would otherwise sound steppy.
     bend: Smoother<f32>,
+    /// The plugin window's size and whether it's open.
+    editor_state: Arc<EguiEditorState>,
 }
 
 #[derive(Enum, PartialEq, Clone, Copy)]
-enum VoiceMode {
+pub enum VoiceMode {
     #[id = "poly"]
     Poly,
     #[id = "mono"]
@@ -42,7 +47,7 @@ enum VoiceMode {
 }
 
 #[derive(Params)]
-struct SynthParams {
+pub struct SynthParams {
     #[id = "voice_mode"]
     pub voice_mode: EnumParam<VoiceMode>,
 
@@ -294,6 +299,7 @@ impl Default for Johnwave {
             free_lfo: Lfo::default(),
             mode: VoiceMode::Poly,
             bend: centred_bend(),
+            editor_state: editor::default_state(),
         }
     }
 }
@@ -421,12 +427,22 @@ impl Plugin for Johnwave {
     const MIDI_INPUT: MidiConfig = MidiConfig::MidiCCs;
     const SAMPLE_ACCURATE_AUTOMATION: bool = true;
 
-    type Editor = ();
+    type Editor = EguiEditor<JohnwaveEditor>;
     type SysExMessage = ();
     type BackgroundTask = ();
 
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
+    }
+
+    /// The DAW asks for the window when you open the plugin.
+    fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Self::Editor> {
+        nice_plug_egui::create_egui_editor(
+            self.editor_state.clone(),
+            RepaintNotifier::new(),
+            EguiNiceSettings::new().with_tile("johnwave"),
+            JohnwaveEditor::new(self.params.clone()),
+        )
     }
 
     fn activate(
