@@ -163,12 +163,6 @@ fn waveform(ui: &mut egui::Ui, morph: f32) {
     let painter = ui.painter_at(rect);
     let visuals = ui.visuals();
 
-    painter.rect_stroke(
-        rect,
-        4.0,
-        visuals.widgets.noninteractive.bg_stroke,
-        egui::StrokeKind::Inside,
-    );
     // A faint centre line at 0.
     painter.line_segment(
         [rect.left_center(), rect.right_center()],
@@ -177,7 +171,7 @@ fn waveform(ui: &mut egui::Ui, morph: f32) {
 
     // One point per 2 screen points across is plenty for a smooth line.
     let steps = (width / 2.0) as usize;
-    let half_height = WAVE_HEIGHT / 2.0 - 6.0; // leave a little room top and bottom
+    let half_height = WAVE_HEIGHT / 2.0 - 8.0; // room top and bottom for the glow
     let points: Vec<egui::Pos2> = (0..=steps)
         .map(|i| {
             let x = i as f32 / steps as f32;
@@ -186,10 +180,27 @@ fn waveform(ui: &mut egui::Ui, morph: f32) {
             egui::pos2(rect.left() + x * width, rect.center().y - y * half_height)
         })
         .collect();
-    painter.add(egui::Shape::line(
-        points,
-        egui::Stroke::new(1.5, visuals.text_color()),
-    ));
+
+    // Neon look: two wide, faint copies of the line underneath make a glow, then the
+    // bright line on top.
+    let color = neon_color(morph);
+    for (width, strength) in [(9.0, 0.10), (5.0, 0.25)] {
+        painter.add(egui::Shape::line(
+            points.clone(),
+            egui::Stroke::new(width, color.gamma_multiply(strength)),
+        ));
+    }
+    painter.add(egui::Shape::line(points, egui::Stroke::new(2.5, color)));
+}
+
+/// The wave's colour, sliding around the colour wheel as Morph goes from sine to square:
+/// cyan (sine) → blue → violet (triangle) → magenta → hot pink (saw) → orange (square).
+fn neon_color(morph: f32) -> egui::Color32 {
+    // Hue is a position on the colour wheel, 0..1 (0 = red, ⅓ = green, ⅔ = blue).
+    // Start at cyan (0.5) and go 0.55 of the way around, ending at orange (1.05 → 0.05).
+    let hue = (0.5 + 0.55 * morph.clamp(0.0, 1.0)).fract();
+    // Full saturation and brightness is what makes it read as neon.
+    egui::ecolor::Hsva::new(hue, 0.9, 1.0, 1.0).into()
 }
 
 /// Space around the window's edges, left and right.
