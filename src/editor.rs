@@ -106,7 +106,7 @@ impl JohnwaveEditor {
         // right edge.
         let mut readout_rect = egui::Rect::NOTHING;
         ui.horizontal(|ui| {
-            ui.heading("johnwave");
+            glow_title(ui, "johnwave");
             ui.add_space(12.0);
             voice_mode_button(ui, &p.voice_mode, &setter);
             // Only reserve the readout's space here. It's drawn at the very end, after
@@ -333,6 +333,36 @@ fn wave_line(
     }
     painter.add(egui::Shape::line(points, egui::Stroke::new(thickness, color)));
 }
+
+/// The window title in neon cyan with a soft glow, like the knob arcs and waves.
+fn glow_title(ui: &mut egui::Ui, text: &str) {
+    let font = egui::TextStyle::Heading.resolve(ui.style());
+    let galley = ui.painter().layout_no_wrap(text.to_string(), font.clone(), cyan());
+    let (rect, _) = ui.allocate_exact_size(galley.size(), egui::Sense::hover());
+    let painter = ui.painter();
+
+    // The glow: faint copies of the text nudged out in a ring around it, a wide faint
+    // ring and a closer, stronger one. Where they overlap, near the letters, it's
+    // brightest.
+    for (radius, strength) in TITLE_GLOW {
+        for i in 0..8 {
+            let angle = i as f32 * std::f32::consts::TAU / 8.0;
+            let offset = radius * egui::vec2(angle.cos(), angle.sin());
+            painter.text(
+                rect.min + offset,
+                egui::Align2::LEFT_TOP,
+                text,
+                font.clone(),
+                cyan().gamma_multiply(strength),
+            );
+        }
+    }
+    // The sharp text on top.
+    painter.galley(rect.min, galley, cyan());
+}
+
+/// The title's glow rings: (how far out, in points; strength 0..1).
+const TITLE_GLOW: [(f32, f32); 2] = [(3.0, 0.05), (1.5, 0.12)];
 
 /// The accent colour: the neon cyan of the knob arcs, toggles, readout value and the
 /// small waves.
