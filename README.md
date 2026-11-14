@@ -3,6 +3,8 @@
 A simple wave-morphing synth plugin (CLAP + VST3), built in Rust with
 [nice-plug](https://crates.io/crates/nice-plug) and an egui UI.
 
+![synth-image](/docs/images/johnwave_1.jpg)
+
 ## Requirements
 
 - Stable Rust, installed via [rustup](https://rustup.rs)
