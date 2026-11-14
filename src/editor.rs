@@ -164,12 +164,10 @@ impl JohnwaveEditor {
                     ui.add(Knob::new(&p.lfo_to_cutoff, &setter, "To Cutoff").bipolar());
                 });
                 ui.add_space(6.0);
+                // The sync rate sits right after Sync, since that's what it belongs to.
                 ui.horizontal(|ui| {
-                    toggle_button(ui, "Sync", &p.lfo_sync, &setter);
                     toggle_button(ui, "Retrigger", &p.lfo_retrigger, &setter);
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Sync Rate");
+                    toggle_button(ui, "Sync", &p.lfo_sync, &setter);
                     ui.add_enabled_ui(synced, |ui| stepper(ui, &p.lfo_division, &setter));
                 });
             });
@@ -340,7 +338,18 @@ fn set<P: Param>(setter: &ParamSetter, param: &P, value: P::Plain) {
 /// An on/off button for a `BoolParam`. It looks pressed while on.
 fn toggle_button(ui: &mut egui::Ui, label: &str, param: &BoolParam, setter: &ParamSetter) {
     let on = param.value();
-    if ui.selectable_label(on, label).clicked() {
+    // When on, a dim cyan fill with bright cyan text, to match the knob arcs.
+    // `scope` keeps this colour change to just this button.
+    let clicked = ui
+        .scope(|ui| {
+            let cyan = neon_color(0.0);
+            let selection = &mut ui.visuals_mut().selection;
+            selection.bg_fill = cyan.gamma_multiply(0.25);
+            selection.stroke.color = cyan;
+            ui.selectable_label(on, label).clicked()
+        })
+        .inner;
+    if clicked {
         set(setter, param, !on);
     }
 }
