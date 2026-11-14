@@ -5,6 +5,7 @@
 //! no widget tree to keep in sync. The window only reads and sets parameters. No sound
 //! logic lives here.
 
+use crate::knob::Knob;
 use crate::SynthParams;
 use nice_plug::context::gui::GuiContext;
 use nice_plug::editor::dpi::LogicalSize;
@@ -93,8 +94,9 @@ impl JohnwaveEditor {
                     ui.label("Mode");
                     choice_buttons(ui, &p.voice_mode, &setter);
                     ui.end_row();
-                    slider_row(ui, "Gain", &p.gain, &setter);
                 });
+                ui.add_space(6.0);
+                ui.add(Knob::new(&p.gain, &setter, "Gain"));
                 section(ui, "Oscillator", |ui| {
                     slider_row(ui, "Morph", &p.morph, &setter);
                 });
@@ -128,7 +130,8 @@ impl JohnwaveEditor {
 
                     // Only one of Rate / Sync Rate is in charge, so grey out the other.
                     ui.label("Rate");
-                    ui.add_enabled(!synced, slider(&p.lfo_rate, &setter));
+                    let rate = ui.add_enabled(!synced, slider(&p.lfo_rate, &setter));
+                    crate::readout::report(ui, &p.lfo_rate, &rate);
                     ui.end_row();
                     ui.label("Sync Rate");
                     ui.add_enabled_ui(synced, |ui| stepper(ui, &p.lfo_division, &setter));
@@ -143,6 +146,11 @@ impl JohnwaveEditor {
 
                     slider_row(ui, "To Morph", &p.lfo_to_morph, &setter);
                     slider_row(ui, "To Cutoff", &p.lfo_to_cutoff, &setter);
+                });
+                // The readout box sits at the bottom of this column. It's drawn last so
+                // it sees which control the mouse is on this frame.
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Max), |ui| {
+                    crate::readout::show(ui);
                 });
             });
         });
@@ -235,10 +243,11 @@ fn slider<'a, P: Param>(param: &'a P, setter: &'a ParamSetter<'a>) -> ParamSlide
     ParamSlider::for_param(param, setter).with_width(SLIDER_WIDTH)
 }
 
-/// One grid row: label, then a slider.
+/// One grid row: label, then a slider. The slider also reports to the readout box.
 fn slider_row<P: Param>(ui: &mut egui::Ui, label: &str, param: &P, setter: &ParamSetter) {
     ui.label(label);
-    ui.add(slider(param, setter));
+    let response = ui.add(slider(param, setter));
+    crate::readout::report(ui, param, &response);
     ui.end_row();
 }
 
