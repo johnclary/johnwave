@@ -37,6 +37,9 @@ pub fn report<P: Param>(ui: &egui::Ui, param: &P, response: &egui::Response) {
     }
 }
 
+/// Space between the box's edges and its text.
+const PADDING: f32 = 10.0;
+
 /// Draw the box into `rect` (space the window set aside for it). Call this after every
 /// control has been drawn this frame, so it shows what they reported.
 pub fn draw(ui: &egui::Ui, rect: egui::Rect) {
@@ -51,22 +54,24 @@ pub fn draw(ui: &egui::Ui, rect: egui::Rect) {
     );
 
     let (name, value) = match &entry {
-        Some(e) => (e.name.as_str(), e.value.as_str()),
-        None => ("", "—"),
+        Some(e) => (e.name.to_uppercase(), e.value.as_str()),
+        None => (String::new(), "—"),
     };
-    let left = rect.left() + 12.0;
+    // One line: the name small and faint on the left, the value big on the right.
     painter.text(
-        egui::pos2(left, rect.top() + 12.0),
-        egui::Align2::LEFT_TOP,
+        egui::pos2(rect.left() + PADDING, rect.center().y),
+        egui::Align2::LEFT_CENTER,
         name,
         egui::FontId::proportional(11.0),
         visuals.weak_text_color(),
     );
+    // Monospaced, so the digits don't shuffle sideways while you drag. Cyan, like the
+    // knob arcs.
     painter.text(
-        egui::pos2(left, rect.bottom() - 12.0),
-        egui::Align2::LEFT_BOTTOM,
+        egui::pos2(rect.right() - PADDING, rect.center().y),
+        egui::Align2::RIGHT_CENTER,
         value,
-        egui::FontId::proportional(20.0),
-        visuals.strong_text_color(),
+        egui::FontId::monospace(18.0),
+        crate::editor::neon_color(0.0),
     );
 }

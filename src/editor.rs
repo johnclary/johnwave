@@ -79,12 +79,25 @@ impl JohnwaveEditor {
     fn contents(&self, ui: &mut egui::Ui, setter: &ParamSetter) {
         let p = &self.params;
 
-        ui.heading("johnwave");
-        ui.add_space(2.0);
+        // Header: the title and the Poly/Mono switch on the left, the readout box at the
+        // right edge.
+        let mut readout_rect = egui::Rect::NOTHING;
+        ui.horizontal(|ui| {
+            ui.heading("johnwave");
+            ui.add_space(12.0);
+            voice_mode_button(ui, &p.voice_mode, &setter);
+            // Only reserve the readout's space here. It's drawn at the very end, after
+            // every control has said whether the mouse is on it.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                readout_rect = ui
+                    .allocate_exact_size(egui::vec2(READOUT_WIDTH, READOUT_HEIGHT), egui::Sense::hover())
+                    .0;
+            });
+        });
 
         // Three rows, following the sound: the source, what shapes it, what moves it.
 
-        // Row 1: the oscillator (with its display), tuning and voice.
+        // Row 1: the oscillator (with its display) and tuning.
         row(ui, |ui| {
             osc_display(ui, self.display_morph.load(Ordering::Relaxed));
             group(ui, |ui| {
@@ -103,18 +116,9 @@ impl JohnwaveEditor {
                     ui.add(Knob::new(&p.bend_range, &setter, "Bend"));
                 });
             });
-            group(ui, |ui| {
-                // No title here: the Poly/Mono button sits where a title would, so the
-                // Gain knob lines up with the knobs beside it.
-                ui.add_space(6.0);
-                voice_mode_button(ui, &p.voice_mode, &setter);
-                ui.add_space(4.0);
-                ui.add(Knob::new(&p.gain, &setter, "Gain"));
-            });
         });
 
-        // Row 2: filter and amp envelope, with the readout box at the right edge.
-        let mut readout_rect = egui::Rect::NOTHING;
+        // Row 2: filter and amp (its envelope plus the output level).
         row(ui, |ui| {
             group(ui, |ui| {
                 knob_section(ui, "Filter", |ui| {
@@ -123,19 +127,13 @@ impl JohnwaveEditor {
                 });
             });
             group(ui, |ui| {
-                knob_section(ui, "Amp Envelope", |ui| {
+                knob_section(ui, "Amp", |ui| {
                     ui.add(Knob::new(&p.attack, &setter, "A"));
                     ui.add(Knob::new(&p.decay, &setter, "D"));
                     ui.add(Knob::new(&p.sustain, &setter, "S"));
                     ui.add(Knob::new(&p.release, &setter, "R"));
+                    ui.add(Knob::new(&p.gain, &setter, "Gain"));
                 });
-            });
-            // Only reserve the readout's space here. It's drawn at the very end, after
-            // every control has said whether the mouse is on it.
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                readout_rect = ui
-                    .allocate_exact_size(egui::vec2(READOUT_WIDTH, SCREEN_SIZE), egui::Sense::hover())
-                    .0;
             });
         });
 
@@ -199,10 +197,12 @@ fn group(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
     });
 }
 
-/// The oscillator display and the readout box are both this tall: about one section
-/// (a title plus a row of knobs). The display is square.
+/// The oscillator display is a square this big: about one section (a title plus a row
+/// of knobs).
 const SCREEN_SIZE: f32 = 84.0;
-const READOUT_WIDTH: f32 = 170.0;
+/// The readout box is a flat strip in the header.
+const READOUT_WIDTH: f32 = 240.0;
+const READOUT_HEIGHT: f32 = 30.0;
 
 /// The oscillator's current shape: one cycle in a small square "screen". It uses the
 /// same `osc::shape` function the sound comes from, so it shows the real shape and its
@@ -288,7 +288,7 @@ fn wave_line(
 
 /// The wave's colour, sliding around the colour wheel as Morph goes from sine to square:
 /// cyan (sine) → blue → violet (triangle) → magenta → hot pink (saw) → orange (square).
-fn neon_color(morph: f32) -> egui::Color32 {
+pub fn neon_color(morph: f32) -> egui::Color32 {
     // Hue is a position on the colour wheel, 0..1 (0 = red, ⅓ = green, ⅔ = blue).
     // Start at cyan (0.5) and go 0.55 of the way around, ending at orange (1.05 → 0.05).
     let hue = (0.5 + 0.55 * morph.clamp(0.0, 1.0)).fract();
