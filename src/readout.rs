@@ -72,6 +72,6 @@ pub fn draw(ui: &egui::Ui, rect: egui::Rect) {
         egui::Align2::RIGHT_CENTER,
         value,
         egui::FontId::monospace(18.0),
-        crate::editor::neon_color(0.0),
+        crate::editor::cyan(),
     );
 }

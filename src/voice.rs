@@ -51,6 +51,9 @@ pub struct Voice {
     lfo: Lfo,
     /// Morph after modulation, from the latest sample. Read by the plugin window.
     morph: f32,
+    /// How loud this voice is right now (amp envelope times velocity, 0..1), from the
+    /// latest sample. Read by the plugin window.
+    level: f32,
 }
 
 impl Default for Voice {
@@ -66,6 +69,7 @@ impl Default for Voice {
             amp_env: Adsr::default(),
             mod_env: Adsr::default(),
             lfo: Lfo::default(),
+            level: 0.0,
             morph: 0.0,
         }
     }
@@ -149,7 +153,8 @@ impl Voice {
         let filtered = self.filter.process(osc, cutoff, resonance, sample_rate);
 
         let amp = self.amp_env.next(&p.amp_env, sample_rate);
-        filtered * amp * velocity
+        self.level = amp * velocity;
+        filtered * self.level
     }
 }
 
@@ -204,14 +209,14 @@ impl VoicePool {
         self.voices.iter_mut().for_each(Voice::reset);
     }
 
-    /// The modulated Morph of the most recently started voice that's still sounding, or
-    /// `None` when nothing is playing.
-    pub fn newest_morph(&self) -> Option<f32> {
+    /// The modulated Morph and the level of the most recently started voice that's still
+    /// sounding, as `(morph, level)`, or `None` when nothing is playing.
+    pub fn newest_display(&self) -> Option<(f32, f32)> {
         self.voices
             .iter()
             .filter(|v| v.is_active())
             .max_by_key(|v| v.age)
-            .map(|v| v.morph)
+            .map(|v| (v.morph, v.level))
     }
 
     /// The single voice used in mono mode.

@@ -11,6 +11,7 @@ mod modulation;
 mod notes;
 mod osc;
 mod readout;
+mod trail;
 mod voice;
 use env::AdsrSettings;
 use lfo::{Lfo, SyncDivision};
@@ -42,6 +43,8 @@ pub struct Johnwave {
     /// thread writes it and the window reads it. An atomic number can be shared like this
     /// safely without locking.
     display_morph: Arc<AtomicF32>,
+    /// How loud that voice is (0..1). The waveform is drawn this tall.
+    display_level: Arc<AtomicF32>,
     /// Lets the audio thread tell the window to redraw (the waveform moved).
     repaint: RepaintNotifier,
 }
@@ -312,6 +315,7 @@ impl Default for Johnwave {
             bend: centred_bend(),
             editor_state: editor::default_state(),
             display_morph: Arc::new(AtomicF32::new(f32::NAN)),
+            display_level: Arc::new(AtomicF32::new(0.0)),
             repaint: RepaintNotifier::new(),
         }
     }
@@ -388,23 +392,25 @@ impl Johnwave {
         division.rate_hz(bpm, bar_beats)
     }
 
-    /// Once per block: pass the Morph currently being played to the window, and ask it to
-    /// redraw if the wave visibly changed. Skipped while the window is closed.
+    /// Once per block: pass the Morph and level currently being played to the window, and
+    /// ask it to redraw if the wave visibly changed. Skipped while the window is closed.
     fn update_display(&self) {
         if !self.editor_state.is_open() {
             return;
         }
         // NaN ("not a number") is the signal for "nothing is playing": the screen goes flat.
-        let morph = self.voices.newest_morph().unwrap_or(f32::NAN);
+        let (morph, level) = self.voices.newest_display().unwrap_or((f32::NAN, 0.0));
         let shown = self.display_morph.load(Ordering::Relaxed);
+        let shown_level = self.display_level.load(Ordering::Relaxed);
         // NaN never equals anything, so check "silent vs. playing" before comparing values.
         let changed = if morph.is_nan() || shown.is_nan() {
             morph.is_nan() != shown.is_nan()
         } else {
-            (morph - shown).abs() > 0.002
+            (morph - shown).abs() > 0.002 || (level - shown_level).abs() > 0.005
         };
         if changed {
             self.display_morph.store(morph, Ordering::Relaxed);
+            self.display_level.store(level, Ordering::Relaxed);
             self.repaint.request_repaint();
         }
     }
@@ -475,7 +481,11 @@ impl Plugin for Johnwave {
             self.editor_state.clone(),
             self.repaint.clone(),
             EguiNiceSettings::new().with_tile("johnwave"),
-            JohnwaveEditor::new(self.params.clone(), self.display_morph.clone()),
+            JohnwaveEditor::new(
+                self.params.clone(),
+                self.display_morph.clone(),
+                self.display_level.clone(),
+            ),
         )
     }
 

@@ -6,6 +6,7 @@
 //! logic lives here.
 
 use crate::knob::Knob;
+use crate::trail::Trail;
 use crate::{SynthParams, VoiceMode};
 use nice_plug::context::gui::GuiContext;
 use nice_plug::editor::dpi::LogicalSize;
@@ -31,14 +32,25 @@ pub struct JohnwaveEditor {
     /// The Shape being played right now (including LFO and Mod Env), set by the audio
     /// thread. The oscillator display draws this.
     display_morph: Arc<AtomicF32>,
+    /// How loud that voice is right now (0..1), set by the audio thread. The display
+    /// draws the wave this tall, so it swells and fades with the amp envelope.
+    display_level: Arc<AtomicF32>,
+    /// The faint copies of recent shapes drawn behind the screen's wave.
+    trail: Trail,
 }
 
 impl JohnwaveEditor {
-    pub fn new(params: Arc<SynthParams>, display_morph: Arc<AtomicF32>) -> Self {
+    pub fn new(
+        params: Arc<SynthParams>,
+        display_morph: Arc<AtomicF32>,
+        display_level: Arc<AtomicF32>,
+    ) -> Self {
         Self {
             params,
             gui_context: None,
             display_morph,
+            display_level,
+            trail: Trail::default(),
         }
     }
 }
@@ -67,6 +79,17 @@ impl NiceEguiApp for JohnwaveEditor {
         // A `ParamSetter` turns clicks and drags into parameter changes the DAW can see
         // and record as automation.
         let setter = gui_context.param_setter();
+
+        // Remember what the screen shows this frame, for its trail. While the trail is
+        // still fading, ask for another frame so it keeps fading even if nothing else
+        // changes.
+        let now = ui.input(|i| i.time);
+        let morph = self.display_morph.load(Ordering::Relaxed);
+        let level = self.display_level.load(Ordering::Relaxed);
+        self.trail.update(now, morph, level);
+        if self.trail.is_fading() {
+            ui.ctx().request_repaint();
+        }
 
         // Padding around the edges of the window.
         egui::Frame::new()
@@ -119,7 +142,9 @@ impl JohnwaveEditor {
             // as tall as the row so far, so its bottom lines up with the knob names.
             let height = ui.min_rect().height();
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                osc_display(ui, self.display_morph.load(Ordering::Relaxed), height);
+                let morph = self.display_morph.load(Ordering::Relaxed);
+                let level = self.display_level.load(Ordering::Relaxed);
+                osc_display(ui, morph, level, &self.trail, height);
             });
         });
 
@@ -209,7 +234,7 @@ const READOUT_HEIGHT: f32 = 30.0;
 /// What the oscillator is playing right now, in a wide "screen" under the readout. It uses the
 /// same `osc::shape` function the sound comes from, so it shows the real shape and its
 /// real level (the square looks smaller because it's scaled to sound as loud as the others).
-fn osc_display(ui: &mut egui::Ui, morph: f32, height: f32) {
+fn osc_display(ui: &mut egui::Ui, morph: f32, level: f32, trail: &Trail, height: f32) {
     let size = egui::vec2(READOUT_WIDTH, height);
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     let painter = ui.painter_at(rect);
@@ -223,14 +248,27 @@ fn osc_display(ui: &mut egui::Ui, morph: f32, height: f32) {
         egui::Stroke::new(1.0, faint.gamma_multiply(0.6)),
     );
 
-    // Nothing playing (NaN): leave just the centre line, so it doesn't show a sound
-    // that isn't there.
+    // The trail first, so the main wave draws on top. Each ghost keeps its own colour
+    // and gets fainter as it ages (squared, so it fades quickly at first, then lingers).
+    let now = ui.input(|i| i.time);
+    for (ghost, fade) in trail.ghosts(now) {
+        let wave = |phase| crate::osc::shape(phase, 0.0, ghost.morph) * ghost.level;
+        let color = neon_color(ghost.morph).gamma_multiply(TRAIL_STRENGTH * fade * fade);
+        wave_line(&painter, inner, SCREEN_CYCLES, wave, color, 1.0);
+    }
+
+    // Nothing playing (NaN): leave just the centre line (and any trail still fading),
+    // so it doesn't show a sound that isn't there.
     if morph.is_nan() {
         return;
     }
-    let wave = |phase| crate::osc::shape(phase, 0.0, morph);
-    wave_line(&painter, inner, SCREEN_CYCLES, wave, neon_color(morph), 3.0);
+    // Scaled by the level, so the wave swells on attack and shrinks away on release.
+    let wave = |phase| crate::osc::shape(phase, 0.0, morph) * level;
+    wave_line(&painter, inner, SCREEN_CYCLES, wave, neon_color(morph), 2.0);
 }
+
+/// How bright the newest ghost in the trail is, compared with the main wave.
+const TRAIL_STRENGTH: f32 = 0.5;
 
 /// How many cycles the wide screen shows.
 const SCREEN_CYCLES: f32 = 2.0;
@@ -258,8 +296,7 @@ const KNOB_WAVE_EDGE: f32 = 0.001;
 fn knob_wave(ui: &mut egui::Ui, wave: impl Fn(f32) -> f32) {
     let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(KNOB_WAVE_SIZE), egui::Sense::hover());
     let painter = ui.painter_at(rect);
-    // neon_color(0.0) is the knob arcs' cyan.
-    wave_line(&painter, rect, 1.0, wave, neon_color(0.0), 2.0);
+    wave_line(&painter, rect, 1.0, wave, cyan(), 2.0);
 }
 
 /// Draw `wave` (phase 0..1 in, -1..1 out) across `rect` as a neon line `thickness` wide.
@@ -297,14 +334,28 @@ fn wave_line(
     painter.add(egui::Shape::line(points, egui::Stroke::new(thickness, color)));
 }
 
-/// The wave's colour, sliding around the colour wheel as Morph goes from sine to square:
-/// cyan (sine) → blue → violet (triangle) → magenta → hot pink (saw) → orange (square).
+/// The accent colour: the neon cyan of the knob arcs, toggles, readout value and the
+/// small waves.
+pub fn cyan() -> egui::Color32 {
+    egui::ecolor::Hsva::new(CYAN_HUE, 0.9, 1.0, 1.0).into()
+}
+
+/// Hue is a position on the colour wheel, 0..1 (0 = red, ⅓ = green, ½ = cyan, ⅔ = blue).
+const CYAN_HUE: f32 = 0.5;
+/// How far the screen's colour drifts as Shape goes from sine to square. Small, so it
+/// stays a cyan: 0.08 ends at a light azure blue. Try negative to drift toward green.
+const HUE_DRIFT: f32 = 0.08;
+/// Saturation at sine and at square. Less saturated looks paler and icier.
+const SATURATION: (f32, f32) = (0.9, 0.65);
+
+/// The screen wave's colour: the accent cyan at sine, drifting gently toward a paler,
+/// icier blue as Shape goes to square.
 pub fn neon_color(morph: f32) -> egui::Color32 {
-    // Hue is a position on the colour wheel, 0..1 (0 = red, ⅓ = green, ⅔ = blue).
-    // Start at cyan (0.5) and go 0.55 of the way around, ending at orange (1.05 → 0.05).
-    let hue = (0.5 + 0.55 * morph.clamp(0.0, 1.0)).fract();
-    // Full saturation and brightness is what makes it read as neon.
-    egui::ecolor::Hsva::new(hue, 0.9, 1.0, 1.0).into()
+    let t = morph.clamp(0.0, 1.0);
+    let hue = CYAN_HUE + HUE_DRIFT * t;
+    let saturation = SATURATION.0 + (SATURATION.1 - SATURATION.0) * t;
+    // Full brightness is what keeps it reading as neon.
+    egui::ecolor::Hsva::new(hue, saturation, 1.0, 1.0).into()
 }
 
 /// Space around the window's edges, left and right.
@@ -363,7 +414,7 @@ fn toggle_button(ui: &mut egui::Ui, label: &str, param: &BoolParam, setter: &Par
 /// Make "selected" buttons in this `ui` a dim cyan fill with bright cyan text, to match
 /// the knob arcs. Call it inside `ui.scope` so the change stays with those buttons.
 fn cyan_selection(ui: &mut egui::Ui) {
-    let cyan = neon_color(0.0);
+    let cyan = cyan();
     let selection = &mut ui.visuals_mut().selection;
     selection.bg_fill = cyan.gamma_multiply(0.25);
     selection.stroke.color = cyan;

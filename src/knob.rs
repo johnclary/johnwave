@@ -37,8 +37,8 @@ impl Default for KnobStyle {
             diameter: 44.0,
             arc_width: 5.0,
             glow: vec![(8.0, 0.10), (4.0, 0.25)],
-            // The same cyan the waveform starts at (hue 0.5).
-            arc_color: egui::ecolor::Hsva::new(0.5, 0.9, 1.0, 1.0).into(),
+            // The accent cyan, shared with the rest of the window.
+            arc_color: crate::editor::cyan(),
             track_color: egui::Color32::from_gray(60),
             label_text_size: 12.0,
         }
