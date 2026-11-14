@@ -9,7 +9,7 @@
 //!
 //! Its name and value show in the readout box (`readout.rs`) while you're on it.
 //!
-//! Like the sliders, it only reads and sets the parameter. Nothing else.
+//! It only reads and sets the parameter. Nothing else.
 
 use nice_plug::prelude::{Param, ParamSetter};
 
@@ -197,7 +197,11 @@ impl<P: Param> egui::Widget for Knob<'_, P> {
 
             // Light up a little while the mouse is on it.
             let active = response.hovered() || response.dragged();
-            let arc_color = if active {
+            // A greyed-out knob (like Rate while the LFO is synced) is drawn much dimmer.
+            let enabled = ui.is_enabled();
+            let arc_color = if !enabled {
+                style.arc_color.gamma_multiply(0.3)
+            } else if active {
                 style.arc_color
             } else {
                 style.arc_color.gamma_multiply(0.85)
@@ -233,7 +237,11 @@ impl<P: Param> egui::Widget for Knob<'_, P> {
                 egui::Align2::CENTER_TOP,
                 self.label,
                 egui::FontId::proportional(style.label_text_size),
-                visuals.text_color(),
+                if enabled {
+                    visuals.text_color()
+                } else {
+                    visuals.weak_text_color()
+                },
             );
         }
 

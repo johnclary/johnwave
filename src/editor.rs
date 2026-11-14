@@ -1,7 +1,7 @@
 //! The plugin window: a deliberately minimal egui UI.
 //!
 //! egui is "immediate mode": every frame, `ui()` describes the whole window from scratch
-//! ("a title, then these sections of sliders"). egui works out the layout and handles the mouse. There's
+//! ("a title, then these sections of knobs"). egui works out the layout and handles the mouse. There's
 //! no widget tree to keep in sync. The window only reads and sets parameters. No sound
 //! logic lives here.
 
@@ -11,7 +11,6 @@ use nice_plug::context::gui::GuiContext;
 use nice_plug::editor::dpi::LogicalSize;
 use nice_plug::prelude::{AtomicF32, BoolParam, Enum, EnumParam, Param, ParamSetter};
 use std::sync::atomic::Ordering;
-use nice_plug_egui::widgets::ParamSlider;
 use nice_plug_egui::{EguiEditorState, Frame, NiceEguiApp};
 use std::sync::Arc;
 
@@ -85,9 +84,8 @@ impl JohnwaveEditor {
         waveform(ui, self.display_morph.load(Ordering::Relaxed));
         ui.add_space(2.0);
 
-        // Two fixed-width columns side by side. Fixed, because each slider's value box
-        // changes width with its value ("5 ms" vs "10.00 s"), and the columns shouldn't
-        // shift or overlap when that happens.
+        // Two fixed-width columns side by side, so the layout never shifts as things
+        // change.
         ui.horizontal_top(|ui| {
             column(ui, |ui| {
                 section(ui, "Voice", |ui| {
@@ -97,8 +95,8 @@ impl JohnwaveEditor {
                 });
                 ui.add_space(6.0);
                 ui.add(Knob::new(&p.gain, &setter, "Gain"));
-                section(ui, "Oscillator", |ui| {
-                    slider_row(ui, "Morph", &p.morph, &setter);
+                knob_section(ui, "Oscillator", |ui| {
+                    ui.add(Knob::new(&p.morph, &setter, "Morph"));
                 });
                 knob_section(ui, "Tuning", |ui| {
                     ui.add(Knob::new(&p.coarse, &setter, "Coarse").bipolar());
@@ -109,43 +107,39 @@ impl JohnwaveEditor {
                     ui.add(Knob::new(&p.cutoff, &setter, "Cutoff"));
                     ui.add(Knob::new(&p.resonance, &setter, "Res"));
                 });
-                section(ui, "Amp Envelope", |ui| {
-                    slider_row(ui, "Attack", &p.attack, &setter);
-                    slider_row(ui, "Decay", &p.decay, &setter);
-                    slider_row(ui, "Sustain", &p.sustain, &setter);
-                    slider_row(ui, "Release", &p.release, &setter);
+                knob_section(ui, "Amp Envelope", |ui| {
+                    ui.add(Knob::new(&p.attack, &setter, "A"));
+                    ui.add(Knob::new(&p.decay, &setter, "D"));
+                    ui.add(Knob::new(&p.sustain, &setter, "S"));
+                    ui.add(Knob::new(&p.release, &setter, "R"));
                 });
             });
             ui.add_space(COLUMN_GAP);
             column(ui, |ui| {
-                section(ui, "Mod Envelope", |ui| {
-                    slider_row(ui, "Attack", &p.mod_env_attack, &setter);
-                    slider_row(ui, "Decay", &p.mod_env_decay, &setter);
-                    slider_row(ui, "To Morph", &p.mod_env_to_morph, &setter);
-                    slider_row(ui, "To Cutoff", &p.mod_env_to_cutoff, &setter);
+                knob_section(ui, "Mod Envelope", |ui| {
+                    ui.add(Knob::new(&p.mod_env_attack, &setter, "A"));
+                    ui.add(Knob::new(&p.mod_env_decay, &setter, "D"));
+                    // The amounts can push either way, so they're bipolar.
+                    ui.add(Knob::new(&p.mod_env_to_morph, &setter, "Morph").bipolar());
+                    ui.add(Knob::new(&p.mod_env_to_cutoff, &setter, "Cutoff").bipolar());
                 });
-                section(ui, "LFO", |ui| {
-                    let synced = p.lfo_sync.value();
-                    slider_row(ui, "Shape", &p.lfo_shape, &setter);
-
-                    // Only one of Rate / Sync Rate is in charge, so grey out the other.
-                    ui.label("Rate");
-                    let rate = ui.add_enabled(!synced, slider(&p.lfo_rate, &setter));
-                    crate::readout::report(ui, &p.lfo_rate, &rate);
-                    ui.end_row();
+                // Only one of Rate / Sync Rate is in charge, so grey out the other.
+                let synced = p.lfo_sync.value();
+                knob_section(ui, "LFO", |ui| {
+                    ui.add(Knob::new(&p.lfo_shape, &setter, "Shape"));
+                    ui.add_enabled(!synced, Knob::new(&p.lfo_rate, &setter, "Rate"));
+                    ui.add(Knob::new(&p.lfo_to_morph, &setter, "Morph"));
+                    // Cutoff can push either way, so it's bipolar.
+                    ui.add(Knob::new(&p.lfo_to_cutoff, &setter, "Cutoff").bipolar());
+                });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    toggle_button(ui, "Sync", &p.lfo_sync, &setter);
+                    toggle_button(ui, "Retrigger", &p.lfo_retrigger, &setter);
+                });
+                ui.horizontal(|ui| {
                     ui.label("Sync Rate");
                     ui.add_enabled_ui(synced, |ui| stepper(ui, &p.lfo_division, &setter));
-                    ui.end_row();
-
-                    ui.label("");
-                    ui.horizontal(|ui| {
-                        toggle_button(ui, "Sync", &p.lfo_sync, &setter);
-                        toggle_button(ui, "Retrigger", &p.lfo_retrigger, &setter);
-                    });
-                    ui.end_row();
-
-                    slider_row(ui, "To Morph", &p.lfo_to_morph, &setter);
-                    slider_row(ui, "To Cutoff", &p.lfo_to_cutoff, &setter);
                 });
                 // The readout box sits at the bottom of this column. It's drawn last so
                 // it sees which control the mouse is on this frame.
@@ -213,7 +207,7 @@ fn neon_color(morph: f32) -> egui::Color32 {
 
 /// Space around the window's edges, left and right.
 const MARGIN_X: f32 = 16.0;
-/// Each column: label (72) + gap + slider + value box, with room for the widest value.
+/// Each column's width. Fits a row of four knobs with room to spare.
 const COLUMN_WIDTH: f32 = 280.0;
 const COLUMN_GAP: f32 = 24.0;
 
@@ -225,8 +219,6 @@ fn column(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
     });
 }
 
-/// How wide every slider is, so the columns line up.
-const SLIDER_WIDTH: f32 = 110.0;
 
 /// A titled block of rows: a small heading, then a label/control grid.
 fn section(ui: &mut egui::Ui, title: &str, rows: impl FnOnce(&mut egui::Ui)) {
@@ -251,18 +243,6 @@ fn knob_section(ui: &mut egui::Ui, title: &str, knobs: impl FnOnce(&mut egui::Ui
         ui.spacing_mut().item_spacing.x = KNOB_GAP;
         knobs(ui);
     });
-}
-
-fn slider<'a, P: Param>(param: &'a P, setter: &'a ParamSetter<'a>) -> ParamSlider<'a, P> {
-    ParamSlider::for_param(param, setter).with_width(SLIDER_WIDTH)
-}
-
-/// One grid row: label, then a slider. The slider also reports to the readout box.
-fn slider_row<P: Param>(ui: &mut egui::Ui, label: &str, param: &P, setter: &ParamSetter) {
-    ui.label(label);
-    let response = ui.add(slider(param, setter));
-    crate::readout::report(ui, param, &response);
-    ui.end_row();
 }
 
 /// Change a parameter the way the DAW expects: begin, set, end. The begin/end pair is
