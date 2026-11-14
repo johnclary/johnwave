@@ -99,12 +99,11 @@ impl JohnwaveEditor {
 
         // Row 1: the oscillator (with its display) and tuning.
         row(ui, |ui| {
-            osc_display(ui, self.display_morph.load(Ordering::Relaxed));
             group(ui, |ui| {
                 knob_section(ui, "Oscillator", |ui| {
                     ui.add(Knob::new(&p.morph, &setter, "Shape"));
-                    // The shape the knob is set to (the screen on the left shows it
-                    // after modulation).
+                    // The shape the knob is set to (the screen on the right shows what's
+                    // actually playing, after modulation).
                     let morph = p.morph.value();
                     knob_wave(ui, |phase| crate::osc::shape(phase, 0.0, morph));
                 });
@@ -115,6 +114,12 @@ impl JohnwaveEditor {
                     ui.add(Knob::new(&p.fine, &setter, "Fine").bipolar());
                     ui.add(Knob::new(&p.bend_range, &setter, "Bend"));
                 });
+            });
+            // The screen sits at the right edge, under the readout, as wide as it. It's
+            // as tall as the row so far, so its bottom lines up with the knob names.
+            let height = ui.min_rect().height();
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                osc_display(ui, self.display_morph.load(Ordering::Relaxed), height);
             });
         });
 
@@ -197,18 +202,16 @@ fn group(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
     });
 }
 
-/// The oscillator display is a square this big: about one section (a title plus a row
-/// of knobs).
-const SCREEN_SIZE: f32 = 84.0;
 /// The readout box is a flat strip in the header.
 const READOUT_WIDTH: f32 = 240.0;
 const READOUT_HEIGHT: f32 = 30.0;
 
-/// The oscillator's current shape: one cycle in a small square "screen". It uses the
+/// What the oscillator is playing right now, in a wide "screen" under the readout. It uses the
 /// same `osc::shape` function the sound comes from, so it shows the real shape and its
 /// real level (the square looks smaller because it's scaled to sound as loud as the others).
-fn osc_display(ui: &mut egui::Ui, morph: f32) {
-    let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(SCREEN_SIZE), egui::Sense::hover());
+fn osc_display(ui: &mut egui::Ui, morph: f32, height: f32) {
+    let size = egui::vec2(READOUT_WIDTH, height);
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     let painter = ui.painter_at(rect);
     let faint = ui.visuals().weak_text_color().gamma_multiply(0.5);
 
@@ -220,9 +223,17 @@ fn osc_display(ui: &mut egui::Ui, morph: f32) {
         egui::Stroke::new(1.0, faint.gamma_multiply(0.6)),
     );
 
+    // Nothing playing (NaN): leave just the centre line, so it doesn't show a sound
+    // that isn't there.
+    if morph.is_nan() {
+        return;
+    }
     let wave = |phase| crate::osc::shape(phase, 0.0, morph);
-    wave_line(&painter, inner, 1.0, wave, neon_color(morph), 3.0);
+    wave_line(&painter, inner, SCREEN_CYCLES, wave, neon_color(morph), 3.0);
 }
+
+/// How many cycles the wide screen shows.
+const SCREEN_CYCLES: f32 = 2.0;
 
 /// Space between a screen's border and what's drawn inside it.
 const SCREEN_PADDING: f32 = 8.0;

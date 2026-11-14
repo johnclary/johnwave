@@ -38,8 +38,9 @@ pub struct Johnwave {
     bend: Smoother<f32>,
     /// The plugin window's size and whether it's open.
     editor_state: Arc<EguiEditorState>,
-    /// The Morph the window's waveform shows. The audio thread writes it and the window
-    /// reads it. An atomic number can be shared like this safely without locking.
+    /// The Morph the window's waveform shows, or NaN when nothing is playing. The audio
+    /// thread writes it and the window reads it. An atomic number can be shared like this
+    /// safely without locking.
     display_morph: Arc<AtomicF32>,
     /// Lets the audio thread tell the window to redraw (the waveform moved).
     repaint: RepaintNotifier,
@@ -310,7 +311,7 @@ impl Default for Johnwave {
             mode: VoiceMode::Poly,
             bend: centred_bend(),
             editor_state: editor::default_state(),
-            display_morph: Arc::new(AtomicF32::new(0.0)),
+            display_morph: Arc::new(AtomicF32::new(f32::NAN)),
             repaint: RepaintNotifier::new(),
         }
     }
@@ -393,9 +394,16 @@ impl Johnwave {
         if !self.editor_state.is_open() {
             return;
         }
-        let morph = self.voices.newest_morph().unwrap_or(self.params.morph.value());
+        // NaN ("not a number") is the signal for "nothing is playing": the screen goes flat.
+        let morph = self.voices.newest_morph().unwrap_or(f32::NAN);
         let shown = self.display_morph.load(Ordering::Relaxed);
-        if (morph - shown).abs() > 0.002 {
+        // NaN never equals anything, so check "silent vs. playing" before comparing values.
+        let changed = if morph.is_nan() || shown.is_nan() {
+            morph.is_nan() != shown.is_nan()
+        } else {
+            (morph - shown).abs() > 0.002
+        };
+        if changed {
             self.display_morph.store(morph, Ordering::Relaxed);
             self.repaint.request_repaint();
         }
