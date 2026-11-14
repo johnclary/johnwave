@@ -166,8 +166,8 @@ impl JohnwaveEditor {
                 ui.add_space(6.0);
                 // The sync rate sits right after Sync, since that's what it belongs to.
                 ui.horizontal(|ui| {
-                    toggle_button(ui, "Retrigger", &p.lfo_retrigger, &setter);
-                    toggle_button(ui, "Sync", &p.lfo_sync, &setter);
+                    toggle_button(ui, "RETRIG", &p.lfo_retrigger, &setter);
+                    toggle_button(ui, "SYNC", &p.lfo_sync, &setter);
                     ui.add_enabled_ui(synced, |ui| stepper(ui, &p.lfo_division, &setter));
                 });
             });
@@ -338,14 +338,9 @@ fn set<P: Param>(setter: &ParamSetter, param: &P, value: P::Plain) {
 /// An on/off button for a `BoolParam`. It looks pressed while on.
 fn toggle_button(ui: &mut egui::Ui, label: &str, param: &BoolParam, setter: &ParamSetter) {
     let on = param.value();
-    // When on, a dim cyan fill with bright cyan text, to match the knob arcs.
-    // `scope` keeps this colour change to just this button.
     let clicked = ui
         .scope(|ui| {
-            let cyan = neon_color(0.0);
-            let selection = &mut ui.visuals_mut().selection;
-            selection.bg_fill = cyan.gamma_multiply(0.25);
-            selection.stroke.color = cyan;
+            cyan_selection(ui);
             ui.selectable_label(on, label).clicked()
         })
         .inner;
@@ -354,20 +349,38 @@ fn toggle_button(ui: &mut egui::Ui, label: &str, param: &BoolParam, setter: &Par
     }
 }
 
-/// One button that flips between Poly and Mono. Its label shows the mode you're in.
-/// Hovering it shows the full name ("Mono (legato)") in the readout box.
+/// Make "selected" buttons in this `ui` a dim cyan fill with bright cyan text, to match
+/// the knob arcs. Call it inside `ui.scope` so the change stays with those buttons.
+fn cyan_selection(ui: &mut egui::Ui) {
+    let cyan = neon_color(0.0);
+    let selection = &mut ui.visuals_mut().selection;
+    selection.bg_fill = cyan.gamma_multiply(0.25);
+    selection.stroke.color = cyan;
+}
+
+/// A two-part switch, `POLY | MONO`, with the current mode lit up. Both are always
+/// visible, so you can see what the other choice is. Hovering shows the full name
+/// ("Mono (legato)") in the readout box.
 fn voice_mode_button(ui: &mut egui::Ui, param: &EnumParam<VoiceMode>, setter: &ParamSetter) {
-    let (label, other) = match param.value() {
-        VoiceMode::Poly => ("POLY", VoiceMode::Mono),
-        VoiceMode::Mono => ("MONO", VoiceMode::Poly),
-    };
-    // A fixed width, so the button doesn't change size when the label does.
-    let button = egui::Button::new(label).min_size(egui::vec2(56.0, 0.0));
-    let response = ui.add(button);
-    if response.clicked() {
-        set(setter, param, other);
-    }
-    crate::readout::report(ui, param, &response);
+    let current = param.value();
+    // A thin outline around both halves, so they read as one switch.
+    egui::Frame::new()
+        .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color().gamma_multiply(0.5)))
+        .corner_radius(4.0)
+        .inner_margin(2.0)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                cyan_selection(ui);
+                for (mode, label) in [(VoiceMode::Poly, "POLY"), (VoiceMode::Mono, "MONO")] {
+                    let response = ui.selectable_label(current == mode, label);
+                    if response.clicked() && current != mode {
+                        set(setter, param, mode);
+                    }
+                    crate::readout::report(ui, param, &response);
+                }
+            });
+        });
 }
 
 /// `‹ value ›` buttons that step through an enum's options in order. Stops at the
