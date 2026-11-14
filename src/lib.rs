@@ -53,6 +53,9 @@ struct SynthParams {
     /// LFO speed in Hz.
     #[id = "lfo_rate"]
     pub lfo_rate: FloatParam,
+    /// The LFO's wave: 0 = sine, 33% = triangle, 67% = saw, 100% = square.
+    #[id = "lfo_shape"]
+    pub lfo_shape: FloatParam,
     /// How far the LFO swings Morph. At 100% it moves ±100%, i.e. the whole range.
     /// (Shown as "LFO to Morph". The id is from when it was called "LFO Depth".)
     #[id = "lfo_depth"]
@@ -166,6 +169,10 @@ impl Default for SynthParams {
             )
             .with_unit(" Hz")
             .with_value_to_string(formatters::v2s_f32_rounded(2)),
+            lfo_shape: FloatParam::new("LFO Shape", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 })
+                .with_smoother(SmoothingStyle::Linear(20.0))
+                .with_value_to_string(Arc::new(shape_name))
+                .with_string_to_value(formatters::s2v_f32_percentage()),
             lfo_to_morph: FloatParam::new("LFO to Morph", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 })
                 .with_smoother(SmoothingStyle::Linear(20.0))
                 .with_unit("%")
@@ -248,6 +255,18 @@ impl Default for SynthParams {
                 .with_unit(" ct")
                 .with_value_to_string(Arc::new(|ct| format!("{ct:+.0}"))),
         }
+    }
+}
+
+/// Show the LFO Shape knob as a percentage, naming the pure shapes at 0/33/67/100%.
+fn shape_name(value: f32) -> String {
+    let percent = (value * 100.0).round();
+    match percent as i32 {
+        0 => "Sine".to_string(),
+        33 => "Triangle".to_string(),
+        67 => "Saw".to_string(),
+        100 => "Square".to_string(),
+        _ => format!("{percent:.0}%"),
     }
 }
 
@@ -457,10 +476,12 @@ impl Plugin for Johnwave {
             }
 
             // Read every knob once per sample, then share the values with all voices.
-            let shared = self.free_lfo.next(lfo_rate, self.sample_rate);
+            let lfo_shape = self.params.lfo_shape.smoothed.next();
+            let shared = self.free_lfo.next(lfo_rate, self.sample_rate, lfo_shape);
             let p = VoiceParams {
                 morph: self.params.morph.smoothed.next(),
                 lfo_rate,
+                lfo_shape,
                 shared_lfo: shared_lfo_on.then_some(shared),
                 pitch_st: pitch_offset_st(
                     self.bend.next(),

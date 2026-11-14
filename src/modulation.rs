@@ -1,7 +1,7 @@
 //! Modulation routing: which source moves which destination, and by how much.
 //!
 //! A *source* is something that changes over time on its own (the LFO, the Mod Env,
-//! the note's velocity). A *destination* is a sound setting it can move (Morph,
+//! the note's velocity, the LFO's random sample & hold). A *destination* is a sound setting it can move (Morph,
 //! Cutoff, ...). A *route* connects one source to one destination with an amount.
 //!
 //! Each voice works out its source values every sample, runs them through the routes,
@@ -24,6 +24,8 @@ pub enum ModSource {
     ModEnv,
     /// 0..=1, how hard the key was hit.
     Velocity,
+    /// −1..=1, the LFO's sample & hold output: a new random level each LFO cycle.
+    Random,
 }
 
 /// Settings that can be modulated.
@@ -86,6 +88,7 @@ pub struct ModSources {
     pub lfo: f32,
     pub mod_env: f32,
     pub velocity: f32,
+    pub random: f32,
 }
 
 impl ModSources {
@@ -94,6 +97,7 @@ impl ModSources {
             ModSource::Lfo => self.lfo,
             ModSource::ModEnv => self.mod_env,
             ModSource::Velocity => self.velocity,
+            ModSource::Random => self.random,
         }
     }
 }
@@ -136,6 +140,7 @@ mod tests {
         lfo: -0.5,
         mod_env: 0.8,
         velocity: 1.0,
+        random: 0.3,
     };
 
     #[test]

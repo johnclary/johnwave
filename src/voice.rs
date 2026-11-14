@@ -8,7 +8,7 @@
 
 use crate::env::{Adsr, AdsrSettings};
 use crate::filter::LowPass;
-use crate::lfo::Lfo;
+use crate::lfo::{Lfo, LfoOut};
 use crate::modulation::{self, ModSources, Routes};
 use crate::osc::MorphOsc;
 use nice_plug::prelude::{Smoother, SmoothingStyle};
@@ -20,9 +20,11 @@ pub const NUM_VOICES: usize = 8;
 pub struct VoiceParams {
     pub morph: f32,
     pub lfo_rate: f32,
+    /// 0 = sine, ⅓ = triangle, ⅔ = saw, 1 = square.
+    pub lfo_shape: f32,
     /// With LFO Retrigger off: the shared LFO's output this sample, used by every voice
     /// so they all move together. With retrigger on: `None`, and each voice runs its own.
-    pub shared_lfo: Option<f32>,
+    pub shared_lfo: Option<LfoOut>,
     /// Pitch shift for every voice in semitones (bend wheel + Coarse + Fine).
     pub pitch_st: f32,
     pub cutoff_hz: f32,
@@ -85,6 +87,9 @@ impl Voice {
         self.velocity.set_target(sample_rate, velocity);
         self.amp_env.trigger();
         self.mod_env.trigger();
+        // Seeding from `age` (different for every note) gives each voice its own random
+        // levels, so a chord's voices don't all jump to the same place.
+        self.lfo.seed(age);
         self.lfo.reset();
     }
 
@@ -116,12 +121,14 @@ impl Voice {
             return 0.0;
         }
         // 1. This voice's modulation sources for this sample.
-        let own_lfo = self.lfo.next(p.lfo_rate, sample_rate);
+        let own_lfo = self.lfo.next(p.lfo_rate, sample_rate, p.lfo_shape);
+        let lfo = p.shared_lfo.unwrap_or(own_lfo);
         let velocity = self.velocity.next();
         let sources = ModSources {
-            lfo: p.shared_lfo.unwrap_or(own_lfo),
+            lfo: lfo.wave,
             mod_env: self.mod_env.next(&p.mod_env, sample_rate),
             velocity,
+            random: lfo.random,
         };
 
         // 2. Run them through the routes to get how far each setting is pushed.
@@ -213,6 +220,7 @@ mod tests {
     const PARAMS: VoiceParams = VoiceParams {
         morph: 0.5,
         lfo_rate: 1.0,
+        lfo_shape: 0.0,
         shared_lfo: None,
         pitch_st: 0.0,
         cutoff_hz: 20_000.0,
@@ -277,7 +285,7 @@ mod tests {
             VoiceParams {
                 morph: 1.0,
                 cutoff_hz: 300.0,
-                shared_lfo: Some(1.0),
+                shared_lfo: Some(LfoOut { wave: 1.0, random: 0.0 }),
                 routes,
                 ..PARAMS
             }
