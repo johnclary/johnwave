@@ -1,4 +1,4 @@
-# johnwave
+# johnwave user manual
 
 A small polyphonic synth: one morphing oscillator, a resonant low-pass filter, two
 envelopes and an LFO.
