@@ -100,14 +100,14 @@ impl JohnwaveEditor {
                 section(ui, "Oscillator", |ui| {
                     slider_row(ui, "Morph", &p.morph, &setter);
                 });
-                section(ui, "Tuning", |ui| {
-                    slider_row(ui, "Coarse", &p.coarse, &setter);
-                    slider_row(ui, "Fine", &p.fine, &setter);
-                    slider_row(ui, "Bend Range", &p.bend_range, &setter);
+                knob_section(ui, "Tuning", |ui| {
+                    ui.add(Knob::new(&p.coarse, &setter, "Coarse").bipolar());
+                    ui.add(Knob::new(&p.fine, &setter, "Fine").bipolar());
+                    ui.add(Knob::new(&p.bend_range, &setter, "Bend"));
                 });
-                section(ui, "Filter", |ui| {
-                    slider_row(ui, "Cutoff", &p.cutoff, &setter);
-                    slider_row(ui, "Resonance", &p.resonance, &setter);
+                knob_section(ui, "Filter", |ui| {
+                    ui.add(Knob::new(&p.cutoff, &setter, "Cutoff"));
+                    ui.add(Knob::new(&p.resonance, &setter, "Res"));
                 });
                 section(ui, "Amp Envelope", |ui| {
                     slider_row(ui, "Attack", &p.attack, &setter);
@@ -237,6 +237,20 @@ fn section(ui: &mut egui::Ui, title: &str, rows: impl FnOnce(&mut egui::Ui)) {
         .spacing([10.0, 4.0])
         .min_col_width(72.0)
         .show(ui, rows);
+}
+
+/// Space between knobs in a row.
+const KNOB_GAP: f32 = 14.0;
+
+/// A titled block like `section`, but with its knobs side by side in a row.
+fn knob_section(ui: &mut egui::Ui, title: &str, knobs: impl FnOnce(&mut egui::Ui)) {
+    ui.add_space(6.0);
+    ui.label(egui::RichText::new(title).strong());
+    ui.add_space(4.0);
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = KNOB_GAP;
+        knobs(ui);
+    });
 }
 
 fn slider<'a, P: Param>(param: &'a P, setter: &'a ParamSetter<'a>) -> ParamSlider<'a, P> {

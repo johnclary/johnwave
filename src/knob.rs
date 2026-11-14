@@ -79,6 +79,8 @@ pub struct Knob<'a, P: Param> {
     setter: &'a ParamSetter<'a>,
     label: &'a str,
     style: KnobStyle,
+    /// Whether the arc grows out from the top centre instead of from the bottom-left.
+    bipolar: bool,
 }
 
 impl<'a, P: Param> Knob<'a, P> {
@@ -88,7 +90,16 @@ impl<'a, P: Param> Knob<'a, P> {
             setter,
             label,
             style: KnobStyle::default(),
+            bipolar: false,
         }
+    }
+
+    /// For parameters centred on zero, like Coarse (-24 to +24). The arc starts at the
+    /// top (the middle of the range) and grows left for negative values and right for
+    /// positive ones, so zero shows as no arc at all.
+    pub fn bipolar(mut self) -> Self {
+        self.bipolar = true;
+        self
     }
 
     /// Use a different look than the default.
@@ -112,8 +123,19 @@ impl<'a, P: Param> Knob<'a, P> {
 impl<P: Param> egui::Widget for Knob<'_, P> {
     fn ui(self, ui: &mut egui::Ui) -> egui::Response {
         let style = &self.style;
+        // As wide as the knob or its name, whichever is wider, so long names like
+        // "Bend Range" don't run into the next knob in a row.
+        let label_width = ui
+            .painter()
+            .layout_no_wrap(
+                self.label.to_string(),
+                egui::FontId::proportional(style.label_text_size),
+                egui::Color32::WHITE,
+            )
+            .size()
+            .x;
         let size = egui::vec2(
-            style.diameter,
+            style.diameter.max(label_width),
             style.diameter / 2.0 + style.arc_bottom() + LABEL_GAP + style.label_text_size,
         );
         let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
@@ -183,13 +205,15 @@ impl<P: Param> egui::Widget for Knob<'_, P> {
 
             // The faint full track.
             painter.add(egui::Shape::line(
-                arc_points(center, radius, 1.0),
+                arc_points(center, radius, 0.0, 1.0),
                 egui::Stroke::new(style.arc_width, style.track_color),
             ));
 
             // The value arc: glow layers first, the bright arc on top.
-            if value > 0.0 {
-                let points = arc_points(center, radius, value);
+            // Where the arc starts: the beginning of the sweep, or the top for bipolar.
+            let origin = if self.bipolar { 0.5 } else { 0.0 };
+            if value != origin {
+                let points = arc_points(center, radius, origin, value);
                 for &(extra, strength) in &style.glow {
                     painter.add(egui::Shape::line(
                         points.clone(),
@@ -218,13 +242,15 @@ impl<P: Param> egui::Widget for Knob<'_, P> {
     }
 }
 
-/// Points along the arc from its start to `amount` (0..1) of the way round.
-fn arc_points(center: egui::Pos2, radius: f32, amount: f32) -> Vec<egui::Pos2> {
+/// Points along the arc between two positions, each 0..1 of the way round the sweep
+/// (0 = bottom-left, 0.5 = top, 1 = bottom-right). `to` may be before `from`.
+fn arc_points(center: egui::Pos2, radius: f32, from: f32, to: f32) -> Vec<egui::Pos2> {
     // About one point every 3° keeps the curve smooth.
-    let steps = ((90.0 * amount).ceil() as usize).max(2);
+    let steps = ((90.0 * (to - from).abs()).ceil() as usize).max(2);
     (0..=steps)
         .map(|i| {
-            let angle = START_ANGLE + SWEEP * amount * (i as f32 / steps as f32);
+            let t = from + (to - from) * (i as f32 / steps as f32);
+            let angle = START_ANGLE + SWEEP * t;
             center + radius * egui::vec2(angle.cos(), angle.sin())
         })
         .collect()
