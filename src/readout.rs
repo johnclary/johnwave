@@ -37,23 +37,17 @@ pub fn report<P: Param>(ui: &egui::Ui, param: &P, response: &egui::Response) {
     }
 }
 
-const HEIGHT: f32 = 48.0;
-
-/// Draw the box, filling the available width. Call this after every control has been
-/// drawn this frame, so it sees what they reported.
-pub fn show(ui: &mut egui::Ui) {
+/// Draw the box into `rect` (space the window set aside for it). Call this after every
+/// control has been drawn this frame, so it shows what they reported.
+pub fn draw(ui: &egui::Ui, rect: egui::Rect) {
     let entry = ui.data(|d| d.get_temp::<Entry>(note_id()));
-
-    let width = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, HEIGHT), egui::Sense::hover());
     let painter = ui.painter_at(rect);
     let visuals = ui.visuals();
 
-    painter.rect_stroke(
-        rect.shrink(0.5),
-        4.0,
-        egui::Stroke::new(1.0, visuals.weak_text_color().gamma_multiply(0.5)),
-        egui::StrokeKind::Inside,
+    crate::editor::screen_frame(
+        &painter,
+        rect,
+        visuals.weak_text_color().gamma_multiply(0.5),
     );
 
     let (name, value) = match &entry {
@@ -62,17 +56,17 @@ pub fn show(ui: &mut egui::Ui) {
     };
     let left = rect.left() + 12.0;
     painter.text(
-        egui::pos2(left, rect.top() + 8.0),
+        egui::pos2(left, rect.top() + 12.0),
         egui::Align2::LEFT_TOP,
         name,
         egui::FontId::proportional(11.0),
         visuals.weak_text_color(),
     );
     painter.text(
-        egui::pos2(left, rect.bottom() - 7.0),
+        egui::pos2(left, rect.bottom() - 12.0),
         egui::Align2::LEFT_BOTTOM,
         value,
-        egui::FontId::proportional(17.0),
+        egui::FontId::proportional(20.0),
         visuals.strong_text_color(),
     );
 }

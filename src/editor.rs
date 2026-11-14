@@ -1,7 +1,7 @@
 //! The plugin window: a deliberately minimal egui UI.
 //!
 //! egui is "immediate mode": every frame, `ui()` describes the whole window from scratch
-//! ("a title, then these sections of knobs"). egui works out the layout and handles the mouse. There's
+//! ("a title, then these rows of knobs"). egui works out the layout and handles the mouse. There's
 //! no widget tree to keep in sync. The window only reads and sets parameters. No sound
 //! logic lives here.
 
@@ -15,8 +15,8 @@ use nice_plug_egui::{EguiEditorState, Frame, NiceEguiApp};
 use std::sync::Arc;
 
 /// Window size in points. On a Retina screen egui draws at twice this many pixels.
-pub const WIDTH: f64 = MARGIN_X as f64 * 2.0 + COLUMN_WIDTH as f64 * 2.0 + COLUMN_GAP as f64;
-pub const HEIGHT: f64 = 640.0;
+pub const WIDTH: f64 = 600.0;
+pub const HEIGHT: f64 = 440.0;
 
 pub fn default_state() -> Arc<EguiEditorState> {
     EguiEditorState::from_size(LogicalSize::new(WIDTH, HEIGHT), 1.0)
@@ -28,8 +28,8 @@ pub struct JohnwaveEditor {
     /// How the window talks to the host (to change parameters, with undo and automation).
     /// It only exists while the window is open, so it starts as `None`.
     gui_context: Option<GuiContext>,
-    /// The Morph being played right now (including LFO and Mod Env), set by the audio
-    /// thread. The waveform draws this.
+    /// The Shape being played right now (including LFO and Mod Env), set by the audio
+    /// thread. The oscillator display draws this.
     display_morph: Arc<AtomicF32>,
 }
 
@@ -80,33 +80,47 @@ impl JohnwaveEditor {
         let p = &self.params;
 
         ui.heading("johnwave");
-        ui.add_space(6.0);
-        waveform(ui, self.display_morph.load(Ordering::Relaxed));
         ui.add_space(2.0);
 
-        // Two fixed-width columns side by side, so the layout never shifts as things
-        // change.
-        ui.horizontal_top(|ui| {
-            column(ui, |ui| {
-                section(ui, "Voice", |ui| {
-                    ui.label("Mode");
-                    voice_mode_button(ui, &p.voice_mode, &setter);
-                    ui.end_row();
-                });
-                ui.add_space(6.0);
-                ui.add(Knob::new(&p.gain, &setter, "Gain"));
+        // Three rows, following the sound: the source, what shapes it, what moves it.
+
+        // Row 1: the oscillator (with its display), tuning and voice.
+        row(ui, |ui| {
+            osc_display(ui, self.display_morph.load(Ordering::Relaxed));
+            group(ui, |ui| {
                 knob_section(ui, "Oscillator", |ui| {
                     ui.add(Knob::new(&p.morph, &setter, "Shape"));
                 });
+            });
+            group(ui, |ui| {
                 knob_section(ui, "Tuning", |ui| {
                     ui.add(Knob::new(&p.coarse, &setter, "Coarse").bipolar());
                     ui.add(Knob::new(&p.fine, &setter, "Fine").bipolar());
                     ui.add(Knob::new(&p.bend_range, &setter, "Bend"));
                 });
+            });
+            group(ui, |ui| {
+                knob_section(ui, "Voice", |ui| {
+                    // Nudge the button down so it lines up with the middle of the knob.
+                    ui.vertical(|ui| {
+                        ui.add_space(12.0);
+                        voice_mode_button(ui, &p.voice_mode, &setter);
+                    });
+                    ui.add(Knob::new(&p.gain, &setter, "Gain"));
+                });
+            });
+        });
+
+        // Row 2: filter and amp envelope, with the readout box at the right edge.
+        let mut readout_rect = egui::Rect::NOTHING;
+        row(ui, |ui| {
+            group(ui, |ui| {
                 knob_section(ui, "Filter", |ui| {
                     ui.add(Knob::new(&p.cutoff, &setter, "Cutoff"));
                     ui.add(Knob::new(&p.resonance, &setter, "Res"));
                 });
+            });
+            group(ui, |ui| {
                 knob_section(ui, "Amp Envelope", |ui| {
                     ui.add(Knob::new(&p.attack, &setter, "A"));
                     ui.add(Knob::new(&p.decay, &setter, "D"));
@@ -114,8 +128,18 @@ impl JohnwaveEditor {
                     ui.add(Knob::new(&p.release, &setter, "R"));
                 });
             });
-            ui.add_space(COLUMN_GAP);
-            column(ui, |ui| {
+            // Only reserve the readout's space here. It's drawn at the very end, after
+            // every control has said whether the mouse is on it.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                readout_rect = ui
+                    .allocate_exact_size(egui::vec2(READOUT_WIDTH, SCREEN_SIZE), egui::Sense::hover())
+                    .0;
+            });
+        });
+
+        // Row 3: modulation.
+        row(ui, |ui| {
+            group(ui, |ui| {
                 knob_section(ui, "Mod Envelope", |ui| {
                     ui.add(Knob::new(&p.mod_env_attack, &setter, "A"));
                     ui.add(Knob::new(&p.mod_env_decay, &setter, "D"));
@@ -123,6 +147,8 @@ impl JohnwaveEditor {
                     ui.add(Knob::new(&p.mod_env_to_morph, &setter, "To Shape").bipolar());
                     ui.add(Knob::new(&p.mod_env_to_cutoff, &setter, "To Cutoff").bipolar());
                 });
+            });
+            group(ui, |ui| {
                 // Only one of Rate / Sync Rate is in charge, so grey out the other.
                 let synced = p.lfo_sync.value();
                 let lfo_shape = p.lfo_shape.value();
@@ -147,37 +173,71 @@ impl JohnwaveEditor {
                     ui.label("Sync Rate");
                     ui.add_enabled_ui(synced, |ui| stepper(ui, &p.lfo_division, &setter));
                 });
-                // The readout box sits at the bottom of this column. It's drawn last so
-                // it sees which control the mouse is on this frame.
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::Max), |ui| {
-                    crate::readout::show(ui);
-                });
             });
         });
+
+        crate::readout::draw(ui, readout_rect);
     }
 }
 
-/// How tall the waveform strip is.
-const WAVE_HEIGHT: f32 = 64.0;
-/// How many cycles of the wave to draw.
-const WAVE_CYCLES: f32 = 2.0;
+/// Space between groups in a row, and between rows.
+const GROUP_GAP: f32 = 32.0;
+const ROW_GAP: f32 = 10.0;
 
-/// The oscillator's current shape, drawn across the full width. It uses the same
-/// `osc::shape` function the sound comes from, so it shows the real shape and its real
-/// level (the square looks smaller because it's scaled to sound as loud as the others).
-fn waveform(ui: &mut egui::Ui, morph: f32) {
-    let width = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, WAVE_HEIGHT), egui::Sense::hover());
+/// One row of groups, side by side, lined up along their tops.
+fn row(ui: &mut egui::Ui, groups: impl FnOnce(&mut egui::Ui)) {
+    ui.add_space(ROW_GAP);
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = GROUP_GAP;
+        groups(ui);
+    });
+}
+
+/// One group in a row: its contents stacked top to bottom.
+fn group(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
+    ui.vertical(|ui| {
+        // Back to normal spacing inside the group (`row` widened it for between groups).
+        ui.spacing_mut().item_spacing.x = 8.0;
+        contents(ui);
+    });
+}
+
+/// The oscillator display and the readout box are both this tall: about one section
+/// (a title plus a row of knobs). The display is square.
+const SCREEN_SIZE: f32 = 84.0;
+const READOUT_WIDTH: f32 = 170.0;
+
+/// The oscillator's current shape: one cycle in a small square "screen". It uses the
+/// same `osc::shape` function the sound comes from, so it shows the real shape and its
+/// real level (the square looks smaller because it's scaled to sound as loud as the others).
+fn osc_display(ui: &mut egui::Ui, morph: f32) {
+    let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(SCREEN_SIZE), egui::Sense::hover());
     let painter = ui.painter_at(rect);
+    let faint = ui.visuals().weak_text_color().gamma_multiply(0.5);
 
+    screen_frame(&painter, rect, faint);
     // A faint centre line at 0.
+    let inner = rect.shrink(SCREEN_PADDING);
     painter.line_segment(
-        [rect.left_center(), rect.right_center()],
-        egui::Stroke::new(1.0, ui.visuals().weak_text_color().gamma_multiply(0.4)),
+        [inner.left_center(), inner.right_center()],
+        egui::Stroke::new(1.0, faint.gamma_multiply(0.6)),
     );
 
     let wave = |phase| crate::osc::shape(phase, 0.0, morph);
-    wave_line(&painter, rect, WAVE_CYCLES, wave, neon_color(morph), 6.0);
+    wave_line(&painter, inner, 1.0, wave, neon_color(morph), 3.0);
+}
+
+/// Space between a screen's border and what's drawn inside it.
+const SCREEN_PADDING: f32 = 8.0;
+
+/// The thin rounded border shared by the oscillator display and the readout box.
+pub fn screen_frame(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
+    painter.rect_stroke(
+        rect.shrink(0.5),
+        4.0,
+        egui::Stroke::new(1.0, color),
+        egui::StrokeKind::Inside,
+    );
 }
 
 /// Size of the little waves next to section titles.
@@ -239,34 +299,11 @@ fn neon_color(morph: f32) -> egui::Color32 {
 
 /// Space around the window's edges, left and right.
 const MARGIN_X: f32 = 16.0;
-/// Each column's width. Fits a row of four knobs with room to spare.
-const COLUMN_WIDTH: f32 = 280.0;
-const COLUMN_GAP: f32 = 24.0;
-
-/// A column of sections that is always exactly `COLUMN_WIDTH` wide.
-fn column(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
-    ui.vertical(|ui| {
-        ui.set_width(COLUMN_WIDTH);
-        contents(ui);
-    });
-}
-
-
-/// A titled block of rows: a small heading, then a label/control grid.
-fn section(ui: &mut egui::Ui, title: &str, rows: impl FnOnce(&mut egui::Ui)) {
-    ui.add_space(6.0);
-    ui.label(egui::RichText::new(title).strong());
-    egui::Grid::new(title)
-        .num_columns(2)
-        .spacing([10.0, 4.0])
-        .min_col_width(72.0)
-        .show(ui, rows);
-}
 
 /// Space between knobs in a row.
 const KNOB_GAP: f32 = 14.0;
 
-/// A titled block like `section`, but with its knobs side by side in a row.
+/// A titled block: a bold title, then its knobs side by side.
 fn knob_section(ui: &mut egui::Ui, title: &str, knobs: impl FnOnce(&mut egui::Ui)) {
     section_heading(ui, title, |_| {});
     knob_row(ui, knobs);
