@@ -15,7 +15,7 @@ use nice_plug_egui::{EguiEditorState, Frame, NiceEguiApp};
 use std::sync::Arc;
 
 /// Window size in points. On a Retina screen egui draws at twice this many pixels.
-pub const WIDTH: f64 = 600.0;
+pub const WIDTH: f64 = 640.0;
 pub const HEIGHT: f64 = 440.0;
 
 pub fn default_state() -> Arc<EguiEditorState> {
@@ -90,6 +90,10 @@ impl JohnwaveEditor {
             group(ui, |ui| {
                 knob_section(ui, "Oscillator", |ui| {
                     ui.add(Knob::new(&p.morph, &setter, "Shape"));
+                    // The shape the knob is set to (the screen on the left shows it
+                    // after modulation).
+                    let morph = p.morph.value();
+                    knob_wave(ui, |phase| crate::osc::shape(phase, 0.0, morph));
                 });
             });
             group(ui, |ui| {
@@ -100,14 +104,12 @@ impl JohnwaveEditor {
                 });
             });
             group(ui, |ui| {
-                knob_section(ui, "Voice", |ui| {
-                    // Nudge the button down so it lines up with the middle of the knob.
-                    ui.vertical(|ui| {
-                        ui.add_space(12.0);
-                        voice_mode_button(ui, &p.voice_mode, &setter);
-                    });
-                    ui.add(Knob::new(&p.gain, &setter, "Gain"));
-                });
+                // No title here: the Poly/Mono button sits where a title would, so the
+                // Gain knob lines up with the knobs beside it.
+                ui.add_space(6.0);
+                voice_mode_button(ui, &p.voice_mode, &setter);
+                ui.add_space(4.0);
+                ui.add(Knob::new(&p.gain, &setter, "Gain"));
             });
         });
 
@@ -152,13 +154,10 @@ impl JohnwaveEditor {
                 // Only one of Rate / Sync Rate is in charge, so grey out the other.
                 let synced = p.lfo_sync.value();
                 let lfo_shape = p.lfo_shape.value();
-                section_heading(ui, "LFO", |ui| {
-                    // A tiny copy of the LFO's current shape, next to the title.
-                    let wave = |phase| crate::lfo::wave(phase, lfo_shape, MINI_WAVE_EDGE);
-                    mini_wave(ui, wave, neon_color(lfo_shape));
-                });
+                section_heading(ui, "LFO", |_| {});
                 knob_row(ui, |ui| {
                     ui.add(Knob::new(&p.lfo_shape, &setter, "Shape"));
+                    knob_wave(ui, |phase| crate::lfo::wave(phase, lfo_shape, KNOB_WAVE_EDGE));
                     ui.add_enabled(!synced, Knob::new(&p.lfo_rate, &setter, "Rate"));
                     ui.add(Knob::new(&p.lfo_to_morph, &setter, "To Shape"));
                     // Cutoff can push either way, so it's bipolar.
@@ -240,20 +239,22 @@ pub fn screen_frame(painter: &egui::Painter, rect: egui::Rect, color: egui::Colo
     );
 }
 
-/// Size of the little waves next to section titles.
-const MINI_WAVE_SIZE: egui::Vec2 = egui::vec2(48.0, 22.0);
-/// The mini LFO wave draws its square with a tiny ramp on each edge, like the real one.
-const MINI_WAVE_EDGE: f32 = 0.001;
+/// The waves beside the Shape knobs are squares as wide as a knob's circle.
+const KNOB_WAVE_SIZE: f32 = 44.0;
+/// The LFO's wave draws its square with a tiny ramp on each edge, like the real one.
+const KNOB_WAVE_EDGE: f32 = 0.001;
 
-/// One cycle of a wave, small, for beside a section title.
-fn mini_wave(ui: &mut egui::Ui, wave: impl Fn(f32) -> f32, color: egui::Color32) {
-    let (rect, _) = ui.allocate_exact_size(MINI_WAVE_SIZE, egui::Sense::hover());
+/// One cycle of a wave, in a knob-sized square, for beside a Shape knob. Always the same
+/// cyan as the knob arcs: it shows what the knob is set to, not what's playing.
+fn knob_wave(ui: &mut egui::Ui, wave: impl Fn(f32) -> f32) {
+    let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(KNOB_WAVE_SIZE), egui::Sense::hover());
     let painter = ui.painter_at(rect);
-    wave_line(&painter, rect, 1.0, wave, color, 1.5);
+    // neon_color(0.0) is the knob arcs' cyan.
+    wave_line(&painter, rect, 1.0, wave, neon_color(0.0), 2.0);
 }
 
 /// Draw `wave` (phase 0..1 in, -1..1 out) across `rect` as a neon line `thickness` wide.
-/// Shared by the big waveform and the mini ones so they look alike.
+/// Shared by the oscillator screen and the knob waves so they look alike.
 fn wave_line(
     painter: &egui::Painter,
     rect: egui::Rect,
