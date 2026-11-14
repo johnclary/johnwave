@@ -4,11 +4,13 @@ use std::sync::Arc;
 mod env;
 mod filter;
 mod lfo;
+mod modulation;
 mod notes;
 mod osc;
 mod voice;
 use env::AdsrSettings;
 use lfo::{Lfo, SyncDivision};
+use modulation::{ModDest, ModSource, Routes};
 use notes::NoteStack;
 use voice::{VoiceParams, VoicePool};
 
@@ -306,6 +308,19 @@ impl Johnwave {
         division.rate_hz(bpm, bar_beats)
     }
 
+    /// The modulation knobs on the panel, as routes. Each knob is a fixed source →
+    /// destination pair. Reading `.smoothed.next()` advances each knob's smoother by one
+    /// sample, so this is called exactly once per sample.
+    fn fixed_routes(&self) -> Routes {
+        let p = &self.params;
+        let mut routes = Routes::EMPTY;
+        routes.add(ModSource::Lfo, ModDest::Morph, p.lfo_to_morph.smoothed.next());
+        routes.add(ModSource::Lfo, ModDest::Cutoff, p.lfo_to_cutoff.smoothed.next());
+        routes.add(ModSource::ModEnv, ModDest::Morph, p.mod_env_to_morph.smoothed.next());
+        routes.add(ModSource::ModEnv, ModDest::Cutoff, p.mod_env_to_cutoff.smoothed.next());
+        routes
+    }
+
     fn adsr_settings(&self) -> AdsrSettings {
         AdsrSettings {
             attack_s: self.params.attack.value() / 1000.0,
@@ -403,12 +418,9 @@ impl Plugin for Johnwave {
                 morph: self.params.morph.smoothed.next(),
                 lfo_rate,
                 shared_lfo: shared_lfo_on.then_some(shared),
-                lfo_to_morph: self.params.lfo_to_morph.smoothed.next(),
-                lfo_to_cutoff_oct: self.params.lfo_to_cutoff.smoothed.next(),
-                mod_env_to_morph: self.params.mod_env_to_morph.smoothed.next(),
                 cutoff_hz: self.params.cutoff.smoothed.next(),
                 resonance: self.params.resonance.smoothed.next(),
-                mod_env_to_cutoff_oct: self.params.mod_env_to_cutoff.smoothed.next(),
+                routes: self.fixed_routes(),
                 amp_env: self.adsr_settings(),
                 mod_env: self.mod_env_settings(),
             };

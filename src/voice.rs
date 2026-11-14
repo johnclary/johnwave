@@ -9,6 +9,7 @@
 use crate::env::{Adsr, AdsrSettings};
 use crate::filter::LowPass;
 use crate::lfo::Lfo;
+use crate::modulation::{self, ModSources, Routes};
 use crate::osc::MorphOsc;
 use nice_plug::prelude::{Smoother, SmoothingStyle};
 use nice_plug::util;
@@ -22,14 +23,10 @@ pub struct VoiceParams {
     /// With LFO Retrigger off: the shared LFO's output this sample, used by every voice
     /// so they all move together. With retrigger on: `None`, and each voice runs its own.
     pub shared_lfo: Option<f32>,
-    pub lfo_to_morph: f32,
-    /// How many octaves the LFO swings the cutoff (can be negative, which flips it).
-    pub lfo_to_cutoff_oct: f32,
-    pub mod_env_to_morph: f32,
     pub cutoff_hz: f32,
     pub resonance: f32,
-    /// How many octaves the Mod Env moves the cutoff at its peak (can be negative).
-    pub mod_env_to_cutoff_oct: f32,
+    /// Which modulation source moves which setting (see `modulation.rs`).
+    pub routes: Routes,
     pub amp_env: AdsrSettings,
     pub mod_env: AdsrSettings,
 }
@@ -116,22 +113,30 @@ impl Voice {
         if !self.is_active() {
             return 0.0;
         }
-        // Morph = knob + LFO swing + envelope push. The oscillator clamps it to 0..=1.
+        // 1. This voice's modulation sources for this sample.
         let own_lfo = self.lfo.next(p.lfo_rate, sample_rate);
-        let lfo = p.shared_lfo.unwrap_or(own_lfo);
-        let mod_env = self.mod_env.next(&p.mod_env, sample_rate);
-        let morph = p.morph + lfo * p.lfo_to_morph + mod_env * p.mod_env_to_morph;
+        let velocity = self.velocity.next();
+        let sources = ModSources {
+            lfo: p.shared_lfo.unwrap_or(own_lfo),
+            mod_env: self.mod_env.next(&p.mod_env, sample_rate),
+            velocity,
+        };
 
-        let osc = self.osc.next(self.freq, sample_rate, morph);
+        // 2. Run them through the routes to get how far each setting is pushed.
+        let off = modulation::apply(&p.routes, &sources);
 
-        // Cutoff = knob, moved by the Mod Env and the LFO. Working in octaves means each
-        // +1 doubles the cutoff and each −1 halves it, which sounds even across the range.
-        let octaves = p.mod_env_to_cutoff_oct * mod_env + p.lfo_to_cutoff_oct * lfo;
-        let cutoff = p.cutoff_hz * octaves.exp2();
-        let filtered = self.filter.process(osc, cutoff, p.resonance, sample_rate);
+        // 3. Knob value + offset. Pitch and cutoff work in semitones and octaves, then
+        // turn into a frequency multiplier: +12 st or +1 oct doubles, −1 oct halves.
+        // The oscillator clamps morph to 0..=1 and the filter clamps resonance.
+        let freq = self.freq * (off.pitch_st / 12.0).exp2();
+        let osc = self.osc.next(freq, sample_rate, p.morph + off.morph);
+
+        let cutoff = p.cutoff_hz * off.cutoff_oct.exp2();
+        let resonance = p.resonance + off.resonance;
+        let filtered = self.filter.process(osc, cutoff, resonance, sample_rate);
 
         let amp = self.amp_env.next(&p.amp_env, sample_rate);
-        filtered * amp * self.velocity.next()
+        filtered * amp * velocity
     }
 }
 
@@ -200,18 +205,16 @@ impl VoicePool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modulation::{ModDest, ModSource};
 
     const SR: f32 = 48_000.0;
     const PARAMS: VoiceParams = VoiceParams {
         morph: 0.5,
         lfo_rate: 1.0,
         shared_lfo: None,
-        lfo_to_morph: 0.0,
-        lfo_to_cutoff_oct: 0.0,
-        mod_env_to_morph: 0.0,
         cutoff_hz: 20_000.0,
         resonance: 0.0,
-        mod_env_to_cutoff_oct: 0.0,
+        routes: Routes::EMPTY,
         amp_env: AdsrSettings {
             attack_s: 0.005,
             decay_s: 0.1,
@@ -265,12 +268,16 @@ mod tests {
     #[test]
     fn lfo_moves_the_cutoff_both_ways() {
         // A square through a 300 Hz filter, with the shared LFO held at its peak (+1).
-        let with = |octaves: f32| VoiceParams {
-            morph: 1.0,
-            cutoff_hz: 300.0,
-            shared_lfo: Some(1.0),
-            lfo_to_cutoff_oct: octaves,
-            ..PARAMS
+        let with = |octaves: f32| {
+            let mut routes = Routes::EMPTY;
+            routes.add(ModSource::Lfo, ModDest::Cutoff, octaves);
+            VoiceParams {
+                morph: 1.0,
+                cutoff_hz: 300.0,
+                shared_lfo: Some(1.0),
+                routes,
+                ..PARAMS
+            }
         };
         let opened = brightness(&with(4.0)); // cutoff pushed up to 4.8 kHz
         let plain = brightness(&with(0.0));
