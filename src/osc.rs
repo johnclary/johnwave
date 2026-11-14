@@ -41,8 +41,9 @@ impl MorphOsc {
     }
 }
 
-/// The morph blend at phase `p`. A pure function, so it's easy to test.
-fn shape(p: f32, dt: f32, morph: f32) -> f32 {
+/// The morph blend at phase `p`. A pure function, so it's easy to test, and the plugin
+/// window uses it to draw the wave (with `dt = 0`, which skips the PolyBLEP smoothing).
+pub fn shape(p: f32, dt: f32, morph: f32) -> f32 {
     // Split 0..=1 into three segments: [sine→tri], [tri→saw], [saw→square].
     let pos = morph.clamp(0.0, 1.0) * 3.0;
     let i = (pos as usize).min(2);

@@ -8,14 +8,15 @@
 use crate::SynthParams;
 use nice_plug::context::gui::GuiContext;
 use nice_plug::editor::dpi::LogicalSize;
-use nice_plug::prelude::{BoolParam, Enum, EnumParam, Param, ParamSetter};
+use nice_plug::prelude::{AtomicF32, BoolParam, Enum, EnumParam, Param, ParamSetter};
+use std::sync::atomic::Ordering;
 use nice_plug_egui::widgets::ParamSlider;
 use nice_plug_egui::{EguiEditorState, Frame, NiceEguiApp};
 use std::sync::Arc;
 
 /// Window size in points. On a Retina screen egui draws at twice this many pixels.
 pub const WIDTH: f64 = MARGIN_X as f64 * 2.0 + COLUMN_WIDTH as f64 * 2.0 + COLUMN_GAP as f64;
-pub const HEIGHT: f64 = 560.0;
+pub const HEIGHT: f64 = 640.0;
 
 pub fn default_state() -> Arc<EguiEditorState> {
     EguiEditorState::from_size(LogicalSize::new(WIDTH, HEIGHT), 1.0)
@@ -27,13 +28,17 @@ pub struct JohnwaveEditor {
     /// How the window talks to the host (to change parameters, with undo and automation).
     /// It only exists while the window is open, so it starts as `None`.
     gui_context: Option<GuiContext>,
+    /// The Morph being played right now (including LFO and Mod Env), set by the audio
+    /// thread. The waveform draws this.
+    display_morph: Arc<AtomicF32>,
 }
 
 impl JohnwaveEditor {
-    pub fn new(params: Arc<SynthParams>) -> Self {
+    pub fn new(params: Arc<SynthParams>, display_morph: Arc<AtomicF32>) -> Self {
         Self {
             params,
             gui_context: None,
+            display_morph,
         }
     }
 }
@@ -75,7 +80,9 @@ impl JohnwaveEditor {
         let p = &self.params;
 
         ui.heading("johnwave");
-        ui.add_space(4.0);
+        ui.add_space(6.0);
+        waveform(ui, self.display_morph.load(Ordering::Relaxed));
+        ui.add_space(2.0);
 
         // Two fixed-width columns side by side. Fixed, because each slider's value box
         // changes width with its value ("5 ms" vs "10.00 s"), and the columns shouldn't
@@ -140,6 +147,49 @@ impl JohnwaveEditor {
             });
         });
     }
+}
+
+/// How tall the waveform strip is.
+const WAVE_HEIGHT: f32 = 64.0;
+/// How many cycles of the wave to draw.
+const WAVE_CYCLES: f32 = 2.0;
+
+/// The oscillator's current shape, drawn across the full width. It uses the same
+/// `osc::shape` function the sound comes from, so it shows the real shape and its real
+/// level (the square looks smaller because it's scaled to sound as loud as the others).
+fn waveform(ui: &mut egui::Ui, morph: f32) {
+    let width = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, WAVE_HEIGHT), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    let visuals = ui.visuals();
+
+    painter.rect_stroke(
+        rect,
+        4.0,
+        visuals.widgets.noninteractive.bg_stroke,
+        egui::StrokeKind::Inside,
+    );
+    // A faint centre line at 0.
+    painter.line_segment(
+        [rect.left_center(), rect.right_center()],
+        egui::Stroke::new(1.0, visuals.weak_text_color().gamma_multiply(0.4)),
+    );
+
+    // One point per 2 screen points across is plenty for a smooth line.
+    let steps = (width / 2.0) as usize;
+    let half_height = WAVE_HEIGHT / 2.0 - 6.0; // leave a little room top and bottom
+    let points: Vec<egui::Pos2> = (0..=steps)
+        .map(|i| {
+            let x = i as f32 / steps as f32;
+            let phase = (x * WAVE_CYCLES).fract();
+            let y = crate::osc::shape(phase, 0.0, morph);
+            egui::pos2(rect.left() + x * width, rect.center().y - y * half_height)
+        })
+        .collect();
+    painter.add(egui::Shape::line(
+        points,
+        egui::Stroke::new(1.5, visuals.text_color()),
+    ));
 }
 
 /// Space around the window's edges, left and right.

@@ -49,6 +49,8 @@ pub struct Voice {
     amp_env: Adsr,
     mod_env: Adsr,
     lfo: Lfo,
+    /// Morph after modulation, from the latest sample. Read by the plugin window.
+    morph: f32,
 }
 
 impl Default for Voice {
@@ -64,6 +66,7 @@ impl Default for Voice {
             amp_env: Adsr::default(),
             mod_env: Adsr::default(),
             lfo: Lfo::default(),
+            morph: 0.0,
         }
     }
 }
@@ -138,7 +141,8 @@ impl Voice {
         // turn into a frequency multiplier: +12 st or +1 oct doubles, −1 oct halves.
         // The oscillator clamps morph to 0..=1 and the filter clamps resonance.
         let freq = self.freq * ((p.pitch_st + off.pitch_st) / 12.0).exp2();
-        let osc = self.osc.next(freq, sample_rate, p.morph + off.morph);
+        self.morph = (p.morph + off.morph).clamp(0.0, 1.0);
+        let osc = self.osc.next(freq, sample_rate, self.morph);
 
         let cutoff = p.cutoff_hz * off.cutoff_oct.exp2();
         let resonance = p.resonance + off.resonance;
@@ -198,6 +202,16 @@ impl VoicePool {
     /// Silence immediately (host reset, or a "choke" from the DAW).
     pub fn reset(&mut self) {
         self.voices.iter_mut().for_each(Voice::reset);
+    }
+
+    /// The modulated Morph of the most recently started voice that's still sounding, or
+    /// `None` when nothing is playing.
+    pub fn newest_morph(&self) -> Option<f32> {
+        self.voices
+            .iter()
+            .filter(|v| v.is_active())
+            .max_by_key(|v| v.age)
+            .map(|v| v.morph)
     }
 
     /// The single voice used in mono mode.

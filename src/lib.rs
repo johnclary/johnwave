@@ -1,4 +1,5 @@
 use nice_plug::prelude::*;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 mod editor;
@@ -35,6 +36,11 @@ pub struct Johnwave {
     bend: Smoother<f32>,
     /// The plugin window's size and whether it's open.
     editor_state: Arc<EguiEditorState>,
+    /// The Morph the window's waveform shows. The audio thread writes it and the window
+    /// reads it. An atomic number can be shared like this safely without locking.
+    display_morph: Arc<AtomicF32>,
+    /// Lets the audio thread tell the window to redraw (the waveform moved).
+    repaint: RepaintNotifier,
 }
 
 #[derive(Enum, PartialEq, Clone, Copy)]
@@ -300,6 +306,8 @@ impl Default for Johnwave {
             mode: VoiceMode::Poly,
             bend: centred_bend(),
             editor_state: editor::default_state(),
+            display_morph: Arc::new(AtomicF32::new(0.0)),
+            repaint: RepaintNotifier::new(),
         }
     }
 }
@@ -375,6 +383,20 @@ impl Johnwave {
         division.rate_hz(bpm, bar_beats)
     }
 
+    /// Once per block: pass the Morph currently being played to the window, and ask it to
+    /// redraw if the wave visibly changed. Skipped while the window is closed.
+    fn update_display(&self) {
+        if !self.editor_state.is_open() {
+            return;
+        }
+        let morph = self.voices.newest_morph().unwrap_or(self.params.morph.value());
+        let shown = self.display_morph.load(Ordering::Relaxed);
+        if (morph - shown).abs() > 0.002 {
+            self.display_morph.store(morph, Ordering::Relaxed);
+            self.repaint.request_repaint();
+        }
+    }
+
     /// The modulation knobs on the panel, as routes. Each knob is a fixed source →
     /// destination pair. Reading `.smoothed.next()` advances each knob's smoother by one
     /// sample, so this is called exactly once per sample.
@@ -439,9 +461,9 @@ impl Plugin for Johnwave {
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Self::Editor> {
         nice_plug_egui::create_egui_editor(
             self.editor_state.clone(),
-            RepaintNotifier::new(),
+            self.repaint.clone(),
             EguiNiceSettings::new().with_tile("johnwave"),
-            JohnwaveEditor::new(self.params.clone()),
+            JohnwaveEditor::new(self.params.clone(), self.display_morph.clone()),
         )
     }
 
@@ -518,6 +540,7 @@ impl Plugin for Johnwave {
             }
         }
 
+        self.update_display();
         ProcessStatus::KeepAlive
     }
 }
