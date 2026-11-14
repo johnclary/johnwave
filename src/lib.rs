@@ -27,6 +27,9 @@ pub struct Johnwave {
     free_lfo: Lfo,
     /// The mode in effect last sample, to detect when the Voice Mode switch changes.
     mode: VoiceMode,
+    /// The pitch bend wheel, 0..1 with 0.5 = centred. Smoothed, because MIDI sends the
+    /// wheel as a series of small jumps that would otherwise sound steppy.
+    bend: Smoother<f32>,
 }
 
 #[derive(Enum, PartialEq, Clone, Copy)]
@@ -99,6 +102,16 @@ struct SynthParams {
 
     #[id = "gain"]
     pub gain: FloatParam,
+
+    /// How far the pitch bend wheel goes, in semitones each way.
+    #[id = "bend_range"]
+    pub bend_range: IntParam,
+    /// Transpose in whole semitones.
+    #[id = "coarse"]
+    pub coarse: IntParam,
+    /// Fine tune in cents (100 cents = 1 semitone).
+    #[id = "fine"]
+    pub fine: FloatParam,
 }
 
 /// An envelope time knob in milliseconds. It's skewed so the short times get more
@@ -225,8 +238,31 @@ impl Default for SynthParams {
             .with_unit(" dB")
             .with_value_to_string(formatters::v2s_f32_gain_to_db(1))
             .with_string_to_value(formatters::s2v_f32_gain_to_db()),
+
+            bend_range: IntParam::new("Bend Range", 2, IntRange::Linear { min: 0, max: 24 })
+                .with_unit(" st"),
+            coarse: IntParam::new("Coarse", 0, IntRange::Linear { min: -24, max: 24 })
+                .with_unit(" st"),
+            fine: FloatParam::new("Fine", 0.0, FloatRange::Linear { min: -100.0, max: 100.0 })
+                .with_smoother(SmoothingStyle::Linear(20.0))
+                .with_unit(" ct")
+                .with_value_to_string(Arc::new(|ct| format!("{ct:+.0}"))),
         }
     }
+}
+
+/// The pitch shift shared by every voice, in semitones: the bend wheel plus tuning.
+/// `bend` is 0..1 with 0.5 = centred, so `(bend - 0.5) * 2` runs −1..=1.
+fn pitch_offset_st(bend: f32, bend_range_st: f32, coarse_st: f32, fine_cents: f32) -> f32 {
+    (bend - 0.5) * 2.0 * bend_range_st + coarse_st + fine_cents / 100.0
+}
+
+/// A bend smoother that starts with the wheel centred. 5 ms is quick enough to feel
+/// immediate but smooths out the jumps between MIDI bend messages.
+fn centred_bend() -> Smoother<f32> {
+    let bend = Smoother::new(SmoothingStyle::Linear(5.0));
+    bend.reset(0.5);
+    bend
 }
 
 impl Default for Johnwave {
@@ -238,6 +274,7 @@ impl Default for Johnwave {
             notes: NoteStack::default(),
             free_lfo: Lfo::default(),
             mode: VoiceMode::Poly,
+            bend: centred_bend(),
         }
     }
 }
@@ -276,6 +313,11 @@ impl Johnwave {
                         }
                     }
                 }
+            }
+            // Bend affects every voice. `channel` is ignored: all 16 MIDI channels bend
+            // the whole synth.
+            NoteEvent::MidiPitchBend { value, .. } => {
+                self.bend.set_target(self.sample_rate, value);
             }
             // The DAW wants these notes cut off immediately (e.g. a choke group).
             NoteEvent::Choke { .. } => {
@@ -356,7 +398,8 @@ impl Plugin for Johnwave {
         ..AudioIOLayout::const_default()
     }];
 
-    const MIDI_INPUT: MidiConfig = MidiConfig::Basic;
+    // `MidiCCs` (not `Basic`) so the DAW also sends pitch bend, not just notes.
+    const MIDI_INPUT: MidiConfig = MidiConfig::MidiCCs;
     const SAMPLE_ACCURATE_AUTOMATION: bool = true;
 
     type Editor = ();
@@ -381,6 +424,7 @@ impl Plugin for Johnwave {
         self.voices.reset();
         self.notes.clear();
         self.free_lfo.reset();
+        self.bend.reset(0.5);
     }
 
     fn process(
@@ -418,6 +462,12 @@ impl Plugin for Johnwave {
                 morph: self.params.morph.smoothed.next(),
                 lfo_rate,
                 shared_lfo: shared_lfo_on.then_some(shared),
+                pitch_st: pitch_offset_st(
+                    self.bend.next(),
+                    self.params.bend_range.value() as f32,
+                    self.params.coarse.value() as f32,
+                    self.params.fine.smoothed.next(),
+                ),
                 cutoff_hz: self.params.cutoff.smoothed.next(),
                 resonance: self.params.resonance.smoothed.next(),
                 routes: self.fixed_routes(),
@@ -455,3 +505,33 @@ impl Vst3Plugin for Johnwave {
 
 nice_export_clap!(Johnwave);
 nice_export_vst3!(Johnwave);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn close(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-5
+    }
+
+    #[test]
+    fn centred_wheel_and_no_tuning_leave_pitch_alone() {
+        assert_eq!(pitch_offset_st(0.5, 2.0, 0.0, 0.0), 0.0);
+        assert_eq!(pitch_offset_st(0.5, 24.0, 0.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn full_bend_reaches_the_bend_range() {
+        assert!(close(pitch_offset_st(1.0, 2.0, 0.0, 0.0), 2.0));
+        assert!(close(pitch_offset_st(0.0, 2.0, 0.0, 0.0), -2.0));
+        assert!(close(pitch_offset_st(0.75, 12.0, 0.0, 0.0), 6.0));
+        assert!(close(pitch_offset_st(1.0, 0.0, 0.0, 0.0), 0.0)); // range 0 = bend off
+    }
+
+    #[test]
+    fn coarse_and_fine_add_on_top() {
+        assert!(close(pitch_offset_st(0.5, 2.0, -12.0, 0.0), -12.0));
+        assert!(close(pitch_offset_st(0.5, 2.0, 0.0, 100.0), 1.0)); // 100 cents = 1 st
+        assert!(close(pitch_offset_st(1.0, 2.0, 7.0, -50.0), 8.5));
+    }
+}

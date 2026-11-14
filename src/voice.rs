@@ -23,6 +23,8 @@ pub struct VoiceParams {
     /// With LFO Retrigger off: the shared LFO's output this sample, used by every voice
     /// so they all move together. With retrigger on: `None`, and each voice runs its own.
     pub shared_lfo: Option<f32>,
+    /// Pitch shift for every voice in semitones (bend wheel + Coarse + Fine).
+    pub pitch_st: f32,
     pub cutoff_hz: f32,
     pub resonance: f32,
     /// Which modulation source moves which setting (see `modulation.rs`).
@@ -128,7 +130,7 @@ impl Voice {
         // 3. Knob value + offset. Pitch and cutoff work in semitones and octaves, then
         // turn into a frequency multiplier: +12 st or +1 oct doubles, −1 oct halves.
         // The oscillator clamps morph to 0..=1 and the filter clamps resonance.
-        let freq = self.freq * (off.pitch_st / 12.0).exp2();
+        let freq = self.freq * ((p.pitch_st + off.pitch_st) / 12.0).exp2();
         let osc = self.osc.next(freq, sample_rate, p.morph + off.morph);
 
         let cutoff = p.cutoff_hz * off.cutoff_oct.exp2();
@@ -212,6 +214,7 @@ mod tests {
         morph: 0.5,
         lfo_rate: 1.0,
         shared_lfo: None,
+        pitch_st: 0.0,
         cutoff_hz: 20_000.0,
         resonance: 0.0,
         routes: Routes::EMPTY,
@@ -284,6 +287,32 @@ mod tests {
         let closed = brightness(&with(-4.0)); // pushed down to ~19 Hz
         assert!(opened > plain * 2.0, "opened {opened} vs plain {plain}");
         assert!(closed < plain * 0.5, "closed {closed} vs plain {plain}");
+    }
+
+    /// Pitch of a sine voice playing A3 (220 Hz), counted from upward zero crossings
+    /// over one second.
+    fn measured_freq(p: &VoiceParams) -> f32 {
+        let mut v = Voice::default();
+        v.start(57, 1.0, 1, SR);
+        let out: Vec<f32> = (0..SR as usize).map(|_| v.next(p, SR)).collect();
+        out.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count() as f32
+    }
+
+    #[test]
+    fn pitch_offsets_shift_by_semitones() {
+        let sine = VoiceParams { morph: 0.0, ..PARAMS };
+        let at = |shared: f32, routed: f32| {
+            // A route from velocity (1.0 here) adds `routed` semitones on top of the
+            // shared bend/tuning offset.
+            let mut routes = Routes::EMPTY;
+            routes.add(ModSource::Velocity, ModDest::Pitch, routed);
+            measured_freq(&VoiceParams { pitch_st: shared, routes, ..sine })
+        };
+        let near = |f: f32, hz: f32| (f - hz).abs() <= 2.0;
+        assert!(near(at(0.0, 0.0), 220.0), "{}", at(0.0, 0.0));
+        assert!(near(at(12.0, 0.0), 440.0), "{}", at(12.0, 0.0));
+        assert!(near(at(-12.0, 0.0), 110.0), "{}", at(-12.0, 0.0));
+        assert!(near(at(5.0, 7.0), 440.0), "{}", at(5.0, 7.0)); // the two add up
     }
 
     #[test]
