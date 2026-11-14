@@ -6,7 +6,7 @@
 //! logic lives here.
 
 use crate::knob::Knob;
-use crate::SynthParams;
+use crate::{SynthParams, VoiceMode};
 use nice_plug::context::gui::GuiContext;
 use nice_plug::editor::dpi::LogicalSize;
 use nice_plug::prelude::{AtomicF32, BoolParam, Enum, EnumParam, Param, ParamSetter};
@@ -90,13 +90,13 @@ impl JohnwaveEditor {
             column(ui, |ui| {
                 section(ui, "Voice", |ui| {
                     ui.label("Mode");
-                    choice_buttons(ui, &p.voice_mode, &setter);
+                    voice_mode_button(ui, &p.voice_mode, &setter);
                     ui.end_row();
                 });
                 ui.add_space(6.0);
                 ui.add(Knob::new(&p.gain, &setter, "Gain"));
                 knob_section(ui, "Oscillator", |ui| {
-                    ui.add(Knob::new(&p.morph, &setter, "Morph"));
+                    ui.add(Knob::new(&p.morph, &setter, "Shape"));
                 });
                 knob_section(ui, "Tuning", |ui| {
                     ui.add(Knob::new(&p.coarse, &setter, "Coarse").bipolar());
@@ -120,17 +120,23 @@ impl JohnwaveEditor {
                     ui.add(Knob::new(&p.mod_env_attack, &setter, "A"));
                     ui.add(Knob::new(&p.mod_env_decay, &setter, "D"));
                     // The amounts can push either way, so they're bipolar.
-                    ui.add(Knob::new(&p.mod_env_to_morph, &setter, "Morph").bipolar());
-                    ui.add(Knob::new(&p.mod_env_to_cutoff, &setter, "Cutoff").bipolar());
+                    ui.add(Knob::new(&p.mod_env_to_morph, &setter, "To Shape").bipolar());
+                    ui.add(Knob::new(&p.mod_env_to_cutoff, &setter, "To Cutoff").bipolar());
                 });
                 // Only one of Rate / Sync Rate is in charge, so grey out the other.
                 let synced = p.lfo_sync.value();
-                knob_section(ui, "LFO", |ui| {
+                let lfo_shape = p.lfo_shape.value();
+                section_heading(ui, "LFO", |ui| {
+                    // A tiny copy of the LFO's current shape, next to the title.
+                    let wave = |phase| crate::lfo::wave(phase, lfo_shape, MINI_WAVE_EDGE);
+                    mini_wave(ui, wave, neon_color(lfo_shape));
+                });
+                knob_row(ui, |ui| {
                     ui.add(Knob::new(&p.lfo_shape, &setter, "Shape"));
                     ui.add_enabled(!synced, Knob::new(&p.lfo_rate, &setter, "Rate"));
-                    ui.add(Knob::new(&p.lfo_to_morph, &setter, "Morph"));
+                    ui.add(Knob::new(&p.lfo_to_morph, &setter, "To Shape"));
                     // Cutoff can push either way, so it's bipolar.
-                    ui.add(Knob::new(&p.lfo_to_cutoff, &setter, "Cutoff").bipolar());
+                    ui.add(Knob::new(&p.lfo_to_cutoff, &setter, "To Cutoff").bipolar());
                 });
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
@@ -163,36 +169,62 @@ fn waveform(ui: &mut egui::Ui, morph: f32) {
     let width = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, WAVE_HEIGHT), egui::Sense::hover());
     let painter = ui.painter_at(rect);
-    let visuals = ui.visuals();
 
     // A faint centre line at 0.
     painter.line_segment(
         [rect.left_center(), rect.right_center()],
-        egui::Stroke::new(1.0, visuals.weak_text_color().gamma_multiply(0.4)),
+        egui::Stroke::new(1.0, ui.visuals().weak_text_color().gamma_multiply(0.4)),
     );
 
+    let wave = |phase| crate::osc::shape(phase, 0.0, morph);
+    wave_line(&painter, rect, WAVE_CYCLES, wave, neon_color(morph), 6.0);
+}
+
+/// Size of the little waves next to section titles.
+const MINI_WAVE_SIZE: egui::Vec2 = egui::vec2(48.0, 22.0);
+/// The mini LFO wave draws its square with a tiny ramp on each edge, like the real one.
+const MINI_WAVE_EDGE: f32 = 0.001;
+
+/// One cycle of a wave, small, for beside a section title.
+fn mini_wave(ui: &mut egui::Ui, wave: impl Fn(f32) -> f32, color: egui::Color32) {
+    let (rect, _) = ui.allocate_exact_size(MINI_WAVE_SIZE, egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    wave_line(&painter, rect, 1.0, wave, color, 1.5);
+}
+
+/// Draw `wave` (phase 0..1 in, -1..1 out) across `rect` as a neon line `thickness` wide.
+/// Shared by the big waveform and the mini ones so they look alike.
+fn wave_line(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    cycles: f32,
+    wave: impl Fn(f32) -> f32,
+    color: egui::Color32,
+    thickness: f32,
+) {
+    // Two wide, faint copies of the line underneath make the glow.
+    let glow = [(thickness * 2.2, 0.10), (thickness * 1.5, 0.25)];
+    // Leave room top and bottom so the glow isn't cut off.
+    let half_height = rect.height() / 2.0 - (glow[0].0 / 2.0 + 1.5);
+
     // One point per 2 screen points across is plenty for a smooth line.
-    let steps = (width / 2.0) as usize;
-    let half_height = WAVE_HEIGHT / 2.0 - 8.0; // room top and bottom for the glow
+    let steps = ((rect.width() / 2.0) as usize).max(8);
     let points: Vec<egui::Pos2> = (0..=steps)
         .map(|i| {
             let x = i as f32 / steps as f32;
-            let phase = (x * WAVE_CYCLES).fract();
-            let y = crate::osc::shape(phase, 0.0, morph);
-            egui::pos2(rect.left() + x * width, rect.center().y - y * half_height)
+            let phase = (x * cycles).fract();
+            let y = wave(phase);
+            egui::pos2(rect.left() + x * rect.width(), rect.center().y - y * half_height)
         })
         .collect();
 
-    // Neon look: two wide, faint copies of the line underneath make a glow, then the
-    // bright line on top.
-    let color = neon_color(morph);
-    for (width, strength) in [(13.0, 0.10), (9.0, 0.25)] {
+    for (width, strength) in glow {
         painter.add(egui::Shape::line(
             points.clone(),
             egui::Stroke::new(width, color.gamma_multiply(strength)),
         ));
     }
-    painter.add(egui::Shape::line(points, egui::Stroke::new(6.0, color)));
+    painter.add(egui::Shape::line(points, egui::Stroke::new(thickness, color)));
 }
 
 /// The wave's colour, sliding around the colour wheel as Morph goes from sine to square:
@@ -236,9 +268,23 @@ const KNOB_GAP: f32 = 14.0;
 
 /// A titled block like `section`, but with its knobs side by side in a row.
 fn knob_section(ui: &mut egui::Ui, title: &str, knobs: impl FnOnce(&mut egui::Ui)) {
+    section_heading(ui, title, |_| {});
+    knob_row(ui, knobs);
+}
+
+/// A section's bold title, with room for something small beside it (`extra`).
+fn section_heading(ui: &mut egui::Ui, title: &str, extra: impl FnOnce(&mut egui::Ui)) {
     ui.add_space(6.0);
-    ui.label(egui::RichText::new(title).strong());
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(title).strong());
+        ui.add_space(6.0);
+        extra(ui);
+    });
     ui.add_space(4.0);
+}
+
+/// Knobs side by side.
+fn knob_row(ui: &mut egui::Ui, knobs: impl FnOnce(&mut egui::Ui)) {
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = KNOB_GAP;
         knobs(ui);
@@ -261,20 +307,20 @@ fn toggle_button(ui: &mut egui::Ui, label: &str, param: &BoolParam, setter: &Par
     }
 }
 
-/// One button per option, side by side, for enums with only a few options.
-fn choice_buttons<T: Enum + PartialEq + 'static>(
-    ui: &mut egui::Ui,
-    param: &EnumParam<T>,
-    setter: &ParamSetter,
-) {
-    let current = param.value().to_index();
-    ui.horizontal(|ui| {
-        for (index, name) in T::variants().iter().enumerate() {
-            if ui.selectable_label(index == current, *name).clicked() && index != current {
-                set(setter, param, T::from_index(index));
-            }
-        }
-    });
+/// One button that flips between Poly and Mono. Its label shows the mode you're in.
+/// Hovering it shows the full name ("Mono (legato)") in the readout box.
+fn voice_mode_button(ui: &mut egui::Ui, param: &EnumParam<VoiceMode>, setter: &ParamSetter) {
+    let (label, other) = match param.value() {
+        VoiceMode::Poly => ("POLY", VoiceMode::Mono),
+        VoiceMode::Mono => ("MONO", VoiceMode::Poly),
+    };
+    // A fixed width, so the button doesn't change size when the label does.
+    let button = egui::Button::new(label).min_size(egui::vec2(56.0, 0.0));
+    let response = ui.add(button);
+    if response.clicked() {
+        set(setter, param, other);
+    }
+    crate::readout::report(ui, param, &response);
 }
 
 /// `‹ value ›` buttons that step through an enum's options in order. Stops at the

@@ -117,8 +117,9 @@ impl Lfo {
 }
 
 /// The morphing wave at phase `p`. All shapes start at 0 and rise, like a sine, so the
-/// sync and retrigger points don't move when the shape changes.
-fn wave(p: f32, shape: f32, edge: f32) -> f32 {
+/// sync and retrigger points don't move when the shape changes. `pub(crate)` lets the
+/// window draw it too (the LFO's mini wave), but nothing outside this plugin.
+pub(crate) fn wave(p: f32, shape: f32, edge: f32) -> f32 {
     let pos = shape.clamp(0.0, 1.0) * 3.0;
     let i = (pos as usize).min(2);
     let t = pos - i as f32;

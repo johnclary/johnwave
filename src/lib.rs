@@ -70,7 +70,7 @@ pub struct SynthParams {
     #[id = "lfo_shape"]
     pub lfo_shape: FloatParam,
     /// How far the LFO swings Morph. At 100% it moves ±100%, i.e. the whole range.
-    /// (Shown as "LFO to Morph". The id is from when it was called "LFO Depth".)
+    /// (Shown as "LFO to Shape". The id is from when it was called "LFO Depth".)
     #[id = "lfo_depth"]
     pub lfo_to_morph: FloatParam,
     /// How many octaves the LFO swings the cutoff up and down.
@@ -165,7 +165,9 @@ impl Default for SynthParams {
     fn default() -> Self {
         Self {
             voice_mode: EnumParam::new("Voice Mode", VoiceMode::Poly),
-            morph: FloatParam::new("Morph", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 })
+            // Shown as "Shape" (it used to be "Morph"). The code still calls it `morph`,
+            // and the id stays "morph" so saved projects and automation keep working.
+            morph: FloatParam::new("Shape", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 })
                 .with_smoother(SmoothingStyle::Linear(20.0))
                 .with_unit("%")
                 .with_value_to_string(formatters::v2s_f32_percentage(0))
@@ -186,7 +188,7 @@ impl Default for SynthParams {
                 .with_smoother(SmoothingStyle::Linear(20.0))
                 .with_value_to_string(Arc::new(shape_name))
                 .with_string_to_value(formatters::s2v_f32_percentage()),
-            lfo_to_morph: FloatParam::new("LFO to Morph", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 })
+            lfo_to_morph: FloatParam::new("LFO to Shape", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 })
                 .with_smoother(SmoothingStyle::Linear(20.0))
                 .with_unit("%")
                 .with_value_to_string(formatters::v2s_f32_percentage(0))
@@ -230,7 +232,7 @@ impl Default for SynthParams {
             .with_unit(" oct")
             .with_value_to_string(Arc::new(|oct| format!("{oct:+.1}"))),
             mod_env_to_morph: FloatParam::new(
-                "Mod Env to Morph",
+                "Mod Env to Shape",
                 0.0,
                 FloatRange::Linear { min: -1.0, max: 1.0 },
             )
