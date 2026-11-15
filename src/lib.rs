@@ -122,6 +122,9 @@ pub struct SynthParams {
 
     #[id = "gain"]
     pub gain: FloatParam,
+    /// Where the sound sits between the speakers: −1 = left, 0 = centre, 1 = right.
+    #[id = "pan"]
+    pub pan: FloatParam,
 
     /// How far the pitch bend wheel goes, in semitones each way.
     #[id = "bend_range"]
@@ -264,6 +267,10 @@ impl Default for SynthParams {
             .with_unit(" dB")
             .with_value_to_string(formatters::v2s_f32_gain_to_db(1))
             .with_string_to_value(formatters::s2v_f32_gain_to_db()),
+            pan: FloatParam::new("Pan", 0.0, FloatRange::Linear { min: -1.0, max: 1.0 })
+                .with_smoother(SmoothingStyle::Linear(20.0))
+                .with_value_to_string(Arc::new(|v| pan_name(v)))
+                .with_string_to_value(Arc::new(|s| pan_from_text(s))),
 
             bend_range: IntParam::new("Bend Range", 2, IntRange::Linear { min: 0, max: 24 })
                 .with_unit(" st"),
@@ -287,6 +294,39 @@ fn shape_name(value: f32) -> String {
         100 => "Square".to_string(),
         _ => format!("{percent:.0}%"),
     }
+}
+
+/// Show Pan as "L50", "C" or "R50" (percent of the way to that side).
+fn pan_name(value: f32) -> String {
+    let percent = (value * 100.0).round() as i32;
+    match percent {
+        0 => "C".to_string(),
+        p if p < 0 => format!("L{}", -p),
+        p => format!("R{p}"),
+    }
+}
+
+/// Read typed-in Pan text: "C", "L30", "r 100", or a plain number (−100..100).
+fn pan_from_text(text: &str) -> Option<f32> {
+    let t = text.trim().to_ascii_uppercase();
+    let percent = if t == "C" {
+        0.0
+    } else if let Some(rest) = t.strip_prefix('L') {
+        -rest.trim().parse::<f32>().ok()?
+    } else if let Some(rest) = t.strip_prefix('R') {
+        rest.trim().parse::<f32>().ok()?
+    } else {
+        t.parse::<f32>().ok()?
+    };
+    Some((percent / 100.0).clamp(-1.0, 1.0))
+}
+
+/// Left and right levels for a pan position (−1..=1), using the equal-power law: the
+/// two levels trace a quarter circle, so left² + right² is always 1 and the sound stays
+/// equally loud as it moves. At centre each side is √½ ≈ 0.707 (−3 dB).
+fn pan_gains(pan: f32) -> (f32, f32) {
+    let angle = (pan + 1.0) * std::f32::consts::FRAC_PI_4; // 0 (left) to π/2 (right)
+    (angle.cos(), angle.sin())
 }
 
 /// The pitch shift shared by every voice, in semitones: the bend wheel plus tuning.
@@ -557,8 +597,10 @@ impl Plugin for Johnwave {
             };
 
             let out = self.voices.next(&p, self.sample_rate) * self.params.gain.smoothed.next();
-            for sample in channel_samples {
-                *sample = out;
+            let (left, right) = pan_gains(self.params.pan.smoothed.next());
+            // The layout is always stereo, so there are exactly two channels.
+            for (channel, sample) in channel_samples.into_iter().enumerate() {
+                *sample = out * if channel == 0 { left } else { right };
             }
         }
 
@@ -594,6 +636,36 @@ mod tests {
 
     fn close(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-5
+    }
+
+    #[test]
+    fn pan_centre_is_equal_and_hard_sides_are_silent_opposite() {
+        let (l, r) = pan_gains(0.0);
+        assert!(close(l, r) && close(l, std::f32::consts::FRAC_1_SQRT_2));
+        let (l, r) = pan_gains(-1.0);
+        assert!(close(l, 1.0) && close(r, 0.0));
+        let (l, r) = pan_gains(1.0);
+        assert!(close(l, 0.0) && close(r, 1.0));
+    }
+
+    #[test]
+    fn pan_keeps_total_power_constant() {
+        for i in -10..=10 {
+            let (l, r) = pan_gains(i as f32 / 10.0);
+            assert!(close(l * l + r * r, 1.0));
+        }
+    }
+
+    #[test]
+    fn pan_text_round_trips() {
+        assert_eq!(pan_name(0.0), "C");
+        assert_eq!(pan_name(-0.5), "L50");
+        assert_eq!(pan_name(1.0), "R100");
+        assert_eq!(pan_from_text("c"), Some(0.0));
+        assert_eq!(pan_from_text("L50"), Some(-0.5));
+        assert_eq!(pan_from_text("r 100"), Some(1.0));
+        assert_eq!(pan_from_text("-25"), Some(-0.25));
+        assert_eq!(pan_from_text("nonsense"), None);
     }
 
     #[test]

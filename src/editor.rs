@@ -163,6 +163,7 @@ impl JohnwaveEditor {
                     ui.add(Knob::new(&p.sustain, &setter, "S"));
                     ui.add(Knob::new(&p.release, &setter, "R"));
                     ui.add(Knob::new(&p.gain, &setter, "Gain"));
+                    ui.add(Knob::new(&p.pan, &setter, "Pan").bipolar());
                 });
             });
         });

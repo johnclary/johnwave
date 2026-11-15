@@ -43,6 +43,7 @@ Grouped as they appear in the window, top to bottom.
 | S (Sustain) | 0–100% | 70% | Level held while the key is down. |
 | R (Release) | 1 ms – 10 s | 200 ms | Time to fade out after the key is released. |
 | Gain | −48 to 0 dB | −12 dB | Overall output level. |
+| Pan | L100 – R100 | C | Position between the left and right speakers. Type `C`, `L30`, `R100` or a number from −100 to 100. |
 
 ### Mod Envelope
 
@@ -77,7 +78,9 @@ Each note gets its own voice, and every voice runs the same chain:
 oscillator → low-pass filter → amp envelope × velocity
 ```
 
-The voices are added together, scaled by Gain and sent to both output channels. All
+The voices are added together, scaled by Gain, then panned to the two output channels.
+Pan uses an equal-power law, so loudness stays even across the sweep: at centre each
+side is at −3 dB, and hard left or right puts the full level on that side only. All
 processing happens one sample at a time, so modulation is smooth with no stepping.
 
 ### The morphing oscillator
