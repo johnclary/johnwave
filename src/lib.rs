@@ -14,6 +14,7 @@ mod readout;
 mod trail;
 mod voice;
 use env::AdsrSettings;
+use filter::FilterType;
 use lfo::{Lfo, SyncDivision};
 use modulation::{ModDest, ModSource, Routes};
 use notes::NoteStack;
@@ -90,7 +91,10 @@ pub struct SynthParams {
     #[id = "lfo_div"]
     pub lfo_division: EnumParam<SyncDivision>,
 
-    /// Low-pass filter cutoff in Hz.
+    /// Which part of the sound the filter keeps (low-pass, high-pass, ...).
+    #[id = "filter_type"]
+    pub filter_type: EnumParam<FilterType>,
+    /// Filter cutoff in Hz.
     #[id = "cutoff"]
     pub cutoff: FloatParam,
     /// Peak at the cutoff: 0 = none, 1 = strong ringing (stops short of self-oscillation).
@@ -216,6 +220,7 @@ impl Default for SynthParams {
             .with_smoother(SmoothingStyle::Logarithmic(20.0))
             .with_value_to_string(formatters::v2s_f32_hz_then_khz(0))
             .with_string_to_value(formatters::s2v_f32_hz_then_khz()),
+            filter_type: EnumParam::new("Filter Type", FilterType::LowPass),
             resonance: FloatParam::new("Resonance", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 })
                 .with_smoother(SmoothingStyle::Linear(20.0))
                 .with_unit("%")
@@ -589,6 +594,7 @@ impl Plugin for Johnwave {
                     self.params.coarse.value() as f32,
                     self.params.fine.smoothed.next(),
                 ),
+                filter_type: self.params.filter_type.value(),
                 cutoff_hz: self.params.cutoff.smoothed.next(),
                 resonance: self.params.resonance.smoothed.next(),
                 routes: self.fixed_routes(),

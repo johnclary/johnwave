@@ -7,7 +7,7 @@
 //! Signal path for one voice: oscillator → low-pass filter → volume envelope × velocity.
 
 use crate::env::{Adsr, AdsrSettings};
-use crate::filter::LowPass;
+use crate::filter::{Filter, FilterType};
 use crate::lfo::{Lfo, LfoOut};
 use crate::modulation::{self, ModSources, Routes};
 use crate::osc::MorphOsc;
@@ -27,6 +27,7 @@ pub struct VoiceParams {
     pub shared_lfo: Option<LfoOut>,
     /// Pitch shift for every voice in semitones (bend wheel + Coarse + Fine).
     pub pitch_st: f32,
+    pub filter_type: FilterType,
     pub cutoff_hz: f32,
     pub resonance: f32,
     /// Which modulation source moves which setting (see `modulation.rs`).
@@ -45,7 +46,7 @@ pub struct Voice {
     freq: f32,
     velocity: Smoother<f32>,
     osc: MorphOsc,
-    filter: LowPass,
+    filter: Filter,
     amp_env: Adsr,
     mod_env: Adsr,
     lfo: Lfo,
@@ -65,7 +66,7 @@ impl Default for Voice {
             freq: 440.0,
             velocity: Smoother::new(SmoothingStyle::Linear(5.0)),
             osc: MorphOsc::default(),
-            filter: LowPass::default(),
+            filter: Filter::default(),
             amp_env: Adsr::default(),
             mod_env: Adsr::default(),
             lfo: Lfo::default(),
@@ -150,7 +151,7 @@ impl Voice {
 
         let cutoff = p.cutoff_hz * off.cutoff_oct.exp2();
         let resonance = p.resonance + off.resonance;
-        let filtered = self.filter.process(osc, cutoff, resonance, sample_rate);
+        let filtered = self.filter.process(osc, p.filter_type, cutoff, resonance, sample_rate);
 
         let amp = self.amp_env.next(&p.amp_env, sample_rate);
         self.level = amp * velocity;
@@ -242,6 +243,7 @@ mod tests {
         lfo_shape: 0.0,
         shared_lfo: None,
         pitch_st: 0.0,
+        filter_type: FilterType::LowPass,
         cutoff_hz: 20_000.0,
         resonance: 0.0,
         routes: Routes::EMPTY,

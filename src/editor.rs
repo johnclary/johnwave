@@ -5,6 +5,7 @@
 //! no widget tree to keep in sync. The window only reads and sets parameters. No sound
 //! logic lives here.
 
+use crate::filter::FilterType;
 use crate::knob::Knob;
 use crate::trail::Trail;
 use crate::{SynthParams, VoiceMode};
@@ -108,7 +109,12 @@ impl JohnwaveEditor {
         ui.horizontal(|ui| {
             glow_title(ui, "johnwave");
             ui.add_space(12.0);
-            voice_mode_button(ui, &p.voice_mode, &setter);
+            switch(
+                ui,
+                &p.voice_mode,
+                &setter,
+                &[(VoiceMode::Poly, "POLY"), (VoiceMode::Mono, "MONO")],
+            );
             // Only reserve the readout's space here. It's drawn at the very end, after
             // every control has said whether the mouse is on it.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -155,6 +161,19 @@ impl JohnwaveEditor {
                     ui.add(Knob::new(&p.cutoff, &setter, "Cutoff"));
                     ui.add(Knob::new(&p.resonance, &setter, "Res"));
                 });
+                // The type sits under its knobs, like the LFO's buttons under its own.
+                ui.add_space(6.0);
+                switch(
+                    ui,
+                    &p.filter_type,
+                    &setter,
+                    &[
+                        (FilterType::LowPass, "LP"),
+                        (FilterType::HighPass, "HP"),
+                        (FilterType::BandPass, "BP"),
+                        (FilterType::Notch, "NOTCH"),
+                    ],
+                );
             });
             group(ui, |ui| {
                 knob_section(ui, "Amp", |ui| {
@@ -451,10 +470,15 @@ fn cyan_selection(ui: &mut egui::Ui) {
     selection.stroke.color = cyan;
 }
 
-/// A two-part switch, `POLY | MONO`, with the current mode lit up. Both are always
-/// visible, so you can see what the other choice is. Hovering shows the full name
-/// ("Mono (legato)") in the readout box.
-fn voice_mode_button(ui: &mut egui::Ui, param: &EnumParam<VoiceMode>, setter: &ParamSetter) {
+/// A switch with one button per choice, like `POLY | MONO`, with the current one lit
+/// up. Every choice is always visible, so you can see what else there is. Hovering
+/// shows the full name ("Mono (legato)") in the readout box.
+fn switch<T: Enum + PartialEq + Copy + 'static>(
+    ui: &mut egui::Ui,
+    param: &EnumParam<T>,
+    setter: &ParamSetter,
+    choices: &[(T, &str)],
+) {
     let current = param.value();
     // A thin outline around both halves, so they read as one switch.
     egui::Frame::new()
@@ -465,10 +489,10 @@ fn voice_mode_button(ui: &mut egui::Ui, param: &EnumParam<VoiceMode>, setter: &P
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 cyan_selection(ui);
-                for (mode, label) in [(VoiceMode::Poly, "POLY"), (VoiceMode::Mono, "MONO")] {
-                    let response = ui.selectable_label(current == mode, label);
-                    if response.clicked() && current != mode {
-                        set(setter, param, mode);
+                for &(choice, label) in choices {
+                    let response = ui.selectable_label(current == choice, label);
+                    if response.clicked() && current != choice {
+                        set(setter, param, choice);
                     }
                     crate::readout::report(ui, param, &response);
                 }

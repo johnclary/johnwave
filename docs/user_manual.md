@@ -1,6 +1,6 @@
 # johnwave user manual
 
-A small polyphonic synth: one morphing oscillator, a resonant low-pass filter, two
+A small polyphonic synth: one morphing oscillator, a resonant multi-type filter, two
 envelopes and an LFO.
 
 ## Parameters
@@ -31,8 +31,9 @@ Grouped as they appear in the window, top to bottom.
 
 | Param | Range | Default | What it does |
 |---|---|---|---|
-| Cutoff | 20 Hz – 20 kHz | 20 kHz | Low-pass cutoff frequency. |
-| Res | 0–100% | 0% | Resonance: a peak at the cutoff, from none to a strong ring. |
+| Cutoff | 20 Hz – 20 kHz | 20 kHz | The frequency the filter works around. |
+| Res | 0–100% | 0% | Resonance: a peak at the cutoff, from none to a strong ring. For BP and NOTCH it narrows the band instead. |
+| Type | LP / HP / BP / NOTCH | LP | Which part of the sound the filter keeps (see [The filter](#the-filter)). |
 
 ### Amp
 
@@ -75,7 +76,7 @@ Hover over or drag any control to see its exact value in the readout at the top 
 Each note gets its own voice, and every voice runs the same chain:
 
 ```
-oscillator → low-pass filter → amp envelope × velocity
+oscillator → filter → amp envelope × velocity
 ```
 
 The voices are added together, scaled by Gain, then panned to the two output channels.
@@ -108,10 +109,25 @@ gives movement much like a filter sweep, but from the source itself.
 
 ### The filter
 
-A 12 dB/octave resonant low-pass: a state-variable design that stays stable and smooth
+A 12 dB/octave resonant filter: a state-variable design that stays stable and smooth
 even when the cutoff moves every sample, which matters because the envelope and LFO
 sweep it. At full resonance it rings strongly but stops just short of self-oscillation,
 so it never whistles on its own.
+
+The Type switch picks which part of the sound it keeps:
+
+- **LP (low-pass)** keeps everything below the cutoff and cuts above it. The classic
+  warm, closing-down sound.
+- **HP (high-pass)** keeps everything above the cutoff and cuts below it, thinning the
+  sound out. With Cutoff at its default 20 kHz it cuts almost everything, so turn
+  Cutoff down when you switch to HP.
+- **BP (band-pass)** keeps a band around the cutoff and cuts both sides: a thin, nasal
+  sound. Resonance makes the band narrower without making it louder.
+- **NOTCH** cuts a band around the cutoff and keeps the rest. Sweeping it gives a
+  phaser-like hollow. Resonance makes the cut narrower.
+
+All four types come out of the same filter at once, so switching while a note plays
+doesn't reset it.
 
 Cutoff modulation is measured in octaves, so a given amount sounds the same anywhere in
 the range: +1 octave always doubles the cutoff.
