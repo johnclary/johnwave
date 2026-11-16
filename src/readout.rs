@@ -37,6 +37,15 @@ pub fn report<P: Param>(ui: &egui::Ui, param: &P, response: &egui::Response) {
     }
 }
 
+/// Like `report`, but with the value already written out, for controls whose value
+/// reads better in some other unit than the parameter's own.
+pub fn report_text(ui: &egui::Ui, name: &str, value: String, response: &egui::Response) {
+    if response.hovered() || response.dragged() {
+        let entry = Entry { name: name.to_string(), value };
+        ui.data_mut(|d| d.insert_temp(note_id(), entry));
+    }
+}
+
 /// Space between the box's edges and its text.
 const PADDING: f32 = 10.0;
 

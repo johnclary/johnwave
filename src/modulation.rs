@@ -6,14 +6,18 @@
 //!
 //! Each voice works out its source values every sample, runs them through the routes,
 //! and gets back one offset per destination (`ModOffsets`). The voice then adds those
-//! offsets to the knob values. The fixed knobs like "LFO to Cutoff" are just routes
-//! too, so any new source or destination works with every existing one.
+//! offsets to the knob values. The routes come from the mod matrix: a few slots, each
+//! picking a source, a destination and an amount (`ModSlotParams`). Any new source or
+//! destination works with every existing one.
 //!
 //! Every destination has its own unit, which is what a route's amount means:
 //! - Morph: morph units (1.0 = the whole sine → square range)
 //! - Cutoff: octaves (+1 doubles the cutoff, −1 halves it)
 //! - Resonance: resonance units (1.0 = the whole 0–100% range)
 //! - Pitch: semitones
+
+use nice_plug::prelude::*;
+use std::sync::Arc;
 
 /// Things that can modulate. Values are −1..=1 (bipolar) or 0..=1 (unipolar).
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -37,6 +41,142 @@ pub enum ModDest {
     Pitch,
 }
 
+impl ModDest {
+    /// How far a matrix slot at 100% pushes this destination, in its own unit.
+    pub fn max_amount(self) -> f32 {
+        match self {
+            ModDest::Morph => 1.0,
+            ModDest::Cutoff => 6.0,
+            ModDest::Resonance => 1.0,
+            ModDest::Pitch => 24.0,
+        }
+    }
+
+    /// A slot amount (−1..=1) written in this destination's unit, like "+2.0 oct".
+    pub fn format_amount(self, amount: f32) -> String {
+        let value = amount * self.max_amount();
+        match self {
+            ModDest::Morph | ModDest::Resonance => format!("{:+.0}%", value * 100.0),
+            ModDest::Cutoff => format!("{value:+.1} oct"),
+            ModDest::Pitch => format!("{value:+.1} st"),
+        }
+    }
+}
+
+/// A matrix slot's source choice: one of the sources, or Off (blank).
+///
+/// `Enum` lets it be a parameter. The `#[id]`s are what saved patches store, so they
+/// must never change. The variants can be renamed or reordered freely.
+#[derive(Enum, Clone, Copy, PartialEq, Debug)]
+pub enum SlotSource {
+    #[id = "off"]
+    Off,
+    #[id = "lfo"]
+    #[name = "LFO"]
+    Lfo,
+    #[id = "menv"]
+    #[name = "Mod Env"]
+    ModEnv,
+    #[id = "vel"]
+    Velocity,
+    #[id = "random"]
+    Random,
+}
+
+impl SlotSource {
+    /// The source, or `None` for Off.
+    pub fn source(self) -> Option<ModSource> {
+        match self {
+            SlotSource::Off => None,
+            SlotSource::Lfo => Some(ModSource::Lfo),
+            SlotSource::ModEnv => Some(ModSource::ModEnv),
+            SlotSource::Velocity => Some(ModSource::Velocity),
+            SlotSource::Random => Some(ModSource::Random),
+        }
+    }
+}
+
+/// A matrix slot's destination choice: one of the destinations, or Off (blank).
+/// Same rules as `SlotSource`: never change an `#[id]`.
+#[derive(Enum, Clone, Copy, PartialEq, Debug)]
+pub enum SlotDest {
+    #[id = "off"]
+    Off,
+    #[id = "shape"]
+    Shape,
+    #[id = "cutoff"]
+    Cutoff,
+    #[id = "res"]
+    #[name = "Res"]
+    Resonance,
+    #[id = "pitch"]
+    Pitch,
+}
+
+impl SlotDest {
+    /// The destination, or `None` for Off.
+    pub fn dest(self) -> Option<ModDest> {
+        match self {
+            SlotDest::Off => None,
+            SlotDest::Shape => Some(ModDest::Morph),
+            SlotDest::Cutoff => Some(ModDest::Cutoff),
+            SlotDest::Resonance => Some(ModDest::Resonance),
+            SlotDest::Pitch => Some(ModDest::Pitch),
+        }
+    }
+
+    /// A slot amount (−1..=1) as text: in the destination's unit, or a plain
+    /// percentage while the destination is blank.
+    pub fn format_amount(self, amount: f32) -> String {
+        match self.dest() {
+            Some(dest) => dest.format_amount(amount),
+            None => format!("{:+.0}%", amount * 100.0),
+        }
+    }
+}
+
+/// The id an enum choice is saved under in patches (its `#[id = "..."]`).
+pub fn enum_id<T: Enum>(choice: T) -> &'static str {
+    T::ids().expect("every choice has an #[id]")[choice.to_index()]
+}
+
+/// How many slots the mod matrix has.
+pub const MATRIX_SLOTS: usize = 6;
+
+/// One mod matrix slot: source → destination, by `amount`.
+///
+/// When these sit in an array in `SynthParams`, nice-plug adds the slot number to each id,
+/// so slot 1 saves as `mod_src_1`, `mod_dst_1` and `mod_amt_1`.
+#[derive(Params)]
+pub struct ModSlotParams {
+    #[id = "mod_src"]
+    pub source: EnumParam<SlotSource>,
+    #[id = "mod_dst"]
+    pub dest: EnumParam<SlotDest>,
+    /// −1..=1, a fraction of the destination's `max_amount`. Negative flips it.
+    #[id = "mod_amt"]
+    pub amount: FloatParam,
+}
+
+impl ModSlotParams {
+    /// Slot `number` (counting from 1), named so the DAW can tell the slots apart.
+    pub fn new(number: usize) -> Self {
+        Self {
+            source: EnumParam::new(format!("Mod {number} Source"), SlotSource::Off),
+            dest: EnumParam::new(format!("Mod {number} Dest"), SlotDest::Off),
+            amount: FloatParam::new(
+                format!("Mod {number} Amount"),
+                0.0,
+                FloatRange::Linear { min: -1.0, max: 1.0 },
+            )
+            .with_smoother(SmoothingStyle::Linear(20.0))
+            .with_unit("%")
+            .with_value_to_string(Arc::new(|v| format!("{:+.0}", v * 100.0)))
+            .with_string_to_value(formatters::s2v_f32_percentage()),
+        }
+    }
+}
+
 /// One source → destination connection.
 #[derive(Clone, Copy, Debug)]
 pub struct Route {
@@ -46,7 +186,7 @@ pub struct Route {
     pub amount: f32,
 }
 
-/// Room for the fixed knobs plus a future mod matrix.
+/// Room for every matrix slot, with space to spare.
 const MAX_ROUTES: usize = 16;
 
 /// A fixed-size list of routes. It uses a plain array instead of a `Vec`, so building
@@ -174,6 +314,13 @@ mod tests {
         let off = apply(&routes, &SOURCES);
         assert_eq!(off.pitch_st, 12.0);
         assert_eq!(off.resonance, -0.25);
+    }
+
+    #[test]
+    fn amounts_read_in_the_destinations_unit() {
+        assert_eq!(ModDest::Cutoff.format_amount(0.5), "+3.0 oct");
+        assert_eq!(ModDest::Morph.format_amount(-0.35), "-35%");
+        assert_eq!(ModDest::Pitch.format_amount(0.5), "+12.0 st");
     }
 
     #[test]

@@ -7,6 +7,8 @@
 
 use crate::filter::FilterType;
 use crate::knob::Knob;
+use crate::slider::Slider;
+use crate::modulation::{ModSlotParams, SlotDest, SlotSource};
 use crate::trail::Trail;
 use crate::{SynthParams, VoiceMode};
 use nice_plug::context::gui::GuiContext;
@@ -18,7 +20,7 @@ use std::sync::Arc;
 
 /// Window size in points. On a Retina screen egui draws at twice this many pixels.
 pub const WIDTH: f64 = 640.0;
-pub const HEIGHT: f64 = 440.0;
+pub const HEIGHT: f64 = 600.0;
 
 pub fn default_state() -> Arc<EguiEditorState> {
     EguiEditorState::from_size(LogicalSize::new(WIDTH, HEIGHT), 1.0)
@@ -193,9 +195,6 @@ impl JohnwaveEditor {
                 knob_section(ui, "Mod Envelope", |ui| {
                     ui.add(Knob::new(&p.mod_env_attack, &setter, "A"));
                     ui.add(Knob::new(&p.mod_env_decay, &setter, "D"));
-                    // The amounts can push either way, so they're bipolar.
-                    ui.add(Knob::new(&p.mod_env_to_morph, &setter, "To Shape").bipolar());
-                    ui.add(Knob::new(&p.mod_env_to_cutoff, &setter, "To Cutoff").bipolar());
                 });
             });
             group(ui, |ui| {
@@ -207,9 +206,6 @@ impl JohnwaveEditor {
                     ui.add(Knob::new(&p.lfo_shape, &setter, "Shape"));
                     knob_wave(ui, |phase| crate::lfo::wave(phase, lfo_shape, KNOB_WAVE_EDGE));
                     ui.add_enabled(!synced, Knob::new(&p.lfo_rate, &setter, "Rate"));
-                    ui.add(Knob::new(&p.lfo_to_morph, &setter, "To Shape"));
-                    // Cutoff can push either way, so it's bipolar.
-                    ui.add(Knob::new(&p.lfo_to_cutoff, &setter, "To Cutoff").bipolar());
                 });
                 ui.add_space(6.0);
                 // The sync rate sits right after Sync, since that's what it belongs to.
@@ -221,9 +217,90 @@ impl JohnwaveEditor {
             });
         });
 
+        // Row 4: the mod matrix. A list of the routes in use, and one editor for the
+        // route picked in the list.
+        row(ui, |ui| {
+            group(ui, |ui| {
+                section_heading(ui, "Mod Matrix", |_| {});
+                mod_matrix(ui, &p.mod_slots, setter);
+            });
+        });
+
         crate::readout::draw(ui, readout_rect);
     }
 }
+
+/// Width of a route's amount slider.
+const AMOUNT_SLIDER_WIDTH: f32 = 160.0;
+
+/// The mod matrix: every slot as a row, `[Source] [Dest] [amount]`. A new slot is
+/// blank (both Off), and a slot only does something once both are set.
+fn mod_matrix(ui: &mut egui::Ui, slots: &[ModSlotParams], setter: &ParamSetter) {
+    ui.spacing_mut().item_spacing.y = 4.0;
+    for slot in slots {
+        route_row(ui, slot, setter);
+    }
+}
+
+/// One slot: its source, destination and amount. The slider is greyed out until both
+/// are set, since it does nothing before then.
+fn route_row(ui: &mut egui::Ui, slot: &ModSlotParams, setter: &ParamSetter) {
+    let dest = slot.dest.value();
+    let routed = slot.source.value() != SlotSource::Off && dest != SlotDest::Off;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        cycler(ui, &slot.source, setter, SlotSource::Off);
+        cycler(ui, &slot.dest, setter, SlotDest::Off);
+        let amount = dest.format_amount(slot.amount.value());
+        ui.add_enabled(
+            routed,
+            Slider::new(&slot.amount, setter, AMOUNT_SLIDER_WIDTH)
+                .bipolar()
+                .readout_value(amount),
+        );
+    });
+}
+
+/// A button that steps through an enum's choices: click for the next one, right-click
+/// for the previous one. It wraps around at the ends. The `blank` choice (Off) shows
+/// as an empty outline, and any other choice lights up. Its name and value show in the
+/// readout box.
+fn cycler<T: Enum + PartialEq + Copy + 'static>(
+    ui: &mut egui::Ui,
+    param: &EnumParam<T>,
+    setter: &ParamSetter,
+    blank: T,
+) {
+    let value = param.value();
+    let current = value.to_index();
+    let count = T::variants().len();
+    let is_blank = value == blank;
+    let text = if is_blank { "" } else { T::variants()[current] };
+    // A fixed width, so the things after it don't jump around as the name changes.
+    let response = ui
+        .scope(|ui| {
+            cyan_selection(ui);
+            ui.add_sized([CYCLER_WIDTH, 20.0], egui::Button::new(text).selected(!is_blank))
+        })
+        .inner
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+
+    let step: isize = if response.clicked() {
+        1
+    } else if response.secondary_clicked() {
+        -1
+    } else {
+        0
+    };
+    if step != 0 {
+        let next = (current as isize + step).rem_euclid(count as isize) as usize;
+        set(setter, param, T::from_index(next));
+    }
+    crate::readout::report(ui, param, &response);
+}
+
+/// Wide enough for the longest choice ("Velocity").
+const CYCLER_WIDTH: f32 = 72.0;
 
 /// Space between groups in a row, and between rows.
 const GROUP_GAP: f32 = 32.0;

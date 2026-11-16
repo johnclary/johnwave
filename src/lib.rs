@@ -1,4 +1,5 @@
 use nice_plug::prelude::*;
+use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
@@ -11,12 +12,14 @@ mod modulation;
 mod notes;
 mod osc;
 mod readout;
+mod slider;
 mod trail;
 mod voice;
 use env::AdsrSettings;
 use filter::FilterType;
 use lfo::{Lfo, SyncDivision};
-use modulation::{ModDest, ModSource, Routes};
+use modulation::{enum_id, ModSlotParams, Routes, SlotDest, SlotSource, MATRIX_SLOTS};
+use nice_plug::plugin::ParamValue;
 use notes::NoteStack;
 use voice::{VoiceParams, VoicePool};
 use editor::JohnwaveEditor;
@@ -74,13 +77,6 @@ pub struct SynthParams {
     /// The LFO's wave: 0 = sine, 33% = triangle, 67% = saw, 100% = square.
     #[id = "lfo_shape"]
     pub lfo_shape: FloatParam,
-    /// How far the LFO swings Morph. At 100% it moves ±100%, i.e. the whole range.
-    /// (Shown as "LFO to Shape". The id is from when it was called "LFO Depth".)
-    #[id = "lfo_depth"]
-    pub lfo_to_morph: FloatParam,
-    /// How many octaves the LFO swings the cutoff up and down.
-    #[id = "lfo_cut"]
-    pub lfo_to_cutoff: FloatParam,
     /// Restart the LFO cycle on each fresh (non-legato) note.
     #[id = "lfo_retrig"]
     pub lfo_retrigger: BoolParam,
@@ -101,15 +97,7 @@ pub struct SynthParams {
     #[id = "resonance"]
     pub resonance: FloatParam,
 
-    // The Mod Env is an attack/decay envelope that drives both Morph and Cutoff.
-    // (The "menv_" ids date from when it only drove Morph. Changing an id would
-    // break saved presets, so they stay.)
-    /// How far the Mod Env pushes Morph at its peak. Negative pushes toward sine.
-    #[id = "menv_amt"]
-    pub mod_env_to_morph: FloatParam,
-    /// How many octaves the Mod Env moves the cutoff at its peak. Negative closes it.
-    #[id = "menv_cut"]
-    pub mod_env_to_cutoff: FloatParam,
+    // The Mod Env is an attack/decay envelope. What it moves is set in the mod matrix.
     #[id = "menv_att"]
     pub mod_env_attack: FloatParam,
     #[id = "menv_dec"]
@@ -139,6 +127,11 @@ pub struct SynthParams {
     /// Fine tune in cents (100 cents = 1 semitone).
     #[id = "fine"]
     pub fine: FloatParam,
+
+    /// The mod matrix: each slot routes one source to one destination.
+    /// `nested(array)` saves slot 1 as `mod_src_1`, `mod_dst_1`, `mod_amt_1`, and so on.
+    #[nested(array, group = "Mod Matrix")]
+    pub mod_slots: [ModSlotParams; MATRIX_SLOTS],
 }
 
 /// An envelope time knob in milliseconds. It's skewed so the short times get more
@@ -199,11 +192,6 @@ impl Default for SynthParams {
                 .with_smoother(SmoothingStyle::Linear(20.0))
                 .with_value_to_string(Arc::new(shape_name))
                 .with_string_to_value(formatters::s2v_f32_percentage()),
-            lfo_to_morph: FloatParam::new("LFO to Shape", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 })
-                .with_smoother(SmoothingStyle::Linear(20.0))
-                .with_unit("%")
-                .with_value_to_string(formatters::v2s_f32_percentage(0))
-                .with_string_to_value(formatters::s2v_f32_percentage()),
             lfo_retrigger: BoolParam::new("LFO Retrigger", true),
             lfo_sync: BoolParam::new("LFO Sync", false),
             lfo_division: EnumParam::new("LFO Sync Rate", SyncDivision::Quarter),
@@ -227,31 +215,6 @@ impl Default for SynthParams {
                 .with_value_to_string(formatters::v2s_f32_percentage(0))
                 .with_string_to_value(formatters::s2v_f32_percentage()),
 
-            lfo_to_cutoff: FloatParam::new(
-                "LFO to Cutoff",
-                0.0,
-                FloatRange::Linear { min: -4.0, max: 4.0 },
-            )
-            .with_smoother(SmoothingStyle::Linear(20.0))
-            .with_unit(" oct")
-            .with_value_to_string(Arc::new(|oct| format!("{oct:+.1}"))),
-            mod_env_to_cutoff: FloatParam::new(
-                "Mod Env to Cutoff",
-                0.0,
-                FloatRange::Linear { min: -6.0, max: 6.0 },
-            )
-            .with_smoother(SmoothingStyle::Linear(20.0))
-            .with_unit(" oct")
-            .with_value_to_string(Arc::new(|oct| format!("{oct:+.1}"))),
-            mod_env_to_morph: FloatParam::new(
-                "Mod Env to Shape",
-                0.0,
-                FloatRange::Linear { min: -1.0, max: 1.0 },
-            )
-            .with_smoother(SmoothingStyle::Linear(20.0))
-            .with_unit("%")
-            .with_value_to_string(formatters::v2s_f32_percentage(0))
-            .with_string_to_value(formatters::s2v_f32_percentage()),
             mod_env_attack: time_param("Mod Env Attack", 1.0, 5_000.0),
             mod_env_decay: time_param("Mod Env Decay", 500.0, 10_000.0),
 
@@ -285,6 +248,9 @@ impl Default for SynthParams {
                 .with_smoother(SmoothingStyle::Linear(20.0))
                 .with_unit(" ct")
                 .with_value_to_string(Arc::new(|ct| format!("{ct:+.0}"))),
+
+            // `from_fn` builds the array by calling this once per slot (i = 0, 1, ...).
+            mod_slots: std::array::from_fn(|i| ModSlotParams::new(i + 1)),
         }
     }
 }
@@ -338,6 +304,52 @@ fn pan_gains(pan: f32) -> (f32, f32) {
 /// `bend` is 0..1 with 0.5 = centred, so `(bend - 0.5) * 2` runs −1..=1.
 fn pitch_offset_st(bend: f32, bend_range_st: f32, coarse_st: f32, fine_cents: f32) -> f32 {
     (bend - 0.5) * 2.0 * bend_range_st + coarse_st + fine_cents / 100.0
+}
+
+/// Turn matrix slots (source, destination, amount −1..=1) into routes, scaling each
+/// amount to its destination's unit. A slot with a blank source or destination is
+/// skipped.
+fn matrix_routes(slots: impl Iterator<Item = (SlotSource, SlotDest, f32)>) -> Routes {
+    let mut routes = Routes::EMPTY;
+    for (source, dest, amount) in slots {
+        if let (Some(source), Some(dest)) = (source.source(), dest.dest()) {
+            routes.add(source, dest, amount * dest.max_amount());
+        }
+    }
+    routes
+}
+
+/// The four knobs that came before the mod matrix: (old id, source, destination). Their
+/// values were already in the destination's unit.
+const OLD_MOD_KNOBS: [(&str, SlotSource, SlotDest); 4] = [
+    ("lfo_depth", SlotSource::Lfo, SlotDest::Shape),
+    ("lfo_cut", SlotSource::Lfo, SlotDest::Cutoff),
+    ("menv_amt", SlotSource::ModEnv, SlotDest::Shape),
+    ("menv_cut", SlotSource::ModEnv, SlotDest::Cutoff),
+];
+
+/// Move an old patch's "LFO/Mod Env to Shape/Cutoff" knobs into matrix slots, so it
+/// sounds the same. Each knob that was turned up takes the next slot. Patches saved with
+/// the matrix are left alone.
+fn migrate_fixed_knobs(params: &mut BTreeMap<String, ParamValue>) {
+    if params.contains_key("mod_src_1") {
+        return;
+    }
+    let mut slot = 1;
+    for (old_id, source, dest) in OLD_MOD_KNOBS {
+        // `remove` takes the old value out of the patch (nothing uses that id any more).
+        let Some(ParamValue::F32(value)) = params.remove(old_id) else {
+            continue;
+        };
+        // Every destination in the table is a real one, so `dest()` is never `None`.
+        let (Some(scale), true) = (dest.dest().map(|d| d.max_amount()), value != 0.0) else {
+            continue;
+        };
+        params.insert(format!("mod_src_{slot}"), ParamValue::String(enum_id(source).into()));
+        params.insert(format!("mod_dst_{slot}"), ParamValue::String(enum_id(dest).into()));
+        params.insert(format!("mod_amt_{slot}"), ParamValue::F32(value / scale));
+        slot += 1;
+    }
 }
 
 /// A bend smoother that starts with the wheel centred. 5 ms is quick enough to feel
@@ -460,17 +472,15 @@ impl Johnwave {
         }
     }
 
-    /// The modulation knobs on the panel, as routes. Each knob is a fixed source →
-    /// destination pair. Reading `.smoothed.next()` advances each knob's smoother by one
-    /// sample, so this is called exactly once per sample.
-    fn fixed_routes(&self) -> Routes {
-        let p = &self.params;
-        let mut routes = Routes::EMPTY;
-        routes.add(ModSource::Lfo, ModDest::Morph, p.lfo_to_morph.smoothed.next());
-        routes.add(ModSource::Lfo, ModDest::Cutoff, p.lfo_to_cutoff.smoothed.next());
-        routes.add(ModSource::ModEnv, ModDest::Morph, p.mod_env_to_morph.smoothed.next());
-        routes.add(ModSource::ModEnv, ModDest::Cutoff, p.mod_env_to_cutoff.smoothed.next());
-        routes
+    /// The mod matrix slots, as routes. Reading `.smoothed.next()` advances each amount's
+    /// smoother by one sample, so this is called exactly once per sample.
+    fn matrix_routes(&self) -> Routes {
+        matrix_routes(self.params.mod_slots.iter().map(|slot| {
+            // Every amount smoother advances, even for an Off slot, so turning the slot
+            // on later doesn't start from a stale value.
+            let amount = slot.amount.smoothed.next();
+            (slot.source.value(), slot.dest.value(), amount)
+        }))
     }
 
     fn adsr_settings(&self) -> AdsrSettings {
@@ -518,6 +528,11 @@ impl Plugin for Johnwave {
 
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
+    }
+
+    /// Runs on every saved patch just before it loads, so old patches can be updated.
+    fn filter_state(state: &mut PluginState) {
+        migrate_fixed_knobs(&mut state.params);
     }
 
     /// The DAW asks for the window when you open the plugin.
@@ -597,7 +612,7 @@ impl Plugin for Johnwave {
                 filter_type: self.params.filter_type.value(),
                 cutoff_hz: self.params.cutoff.smoothed.next(),
                 resonance: self.params.resonance.smoothed.next(),
-                routes: self.fixed_routes(),
+                routes: self.matrix_routes(),
                 amp_env: self.adsr_settings(),
                 mod_env: self.mod_env_settings(),
             };
@@ -672,6 +687,100 @@ mod tests {
         assert_eq!(pan_from_text("r 100"), Some(1.0));
         assert_eq!(pan_from_text("-25"), Some(-0.25));
         assert_eq!(pan_from_text("nonsense"), None);
+    }
+
+    fn old_patch(values: &[(&str, f32)]) -> BTreeMap<String, ParamValue> {
+        values
+            .iter()
+            .map(|&(id, v)| (id.to_string(), ParamValue::F32(v)))
+            .collect()
+    }
+
+    fn text(params: &BTreeMap<String, ParamValue>, id: &str) -> String {
+        match params.get(id) {
+            Some(ParamValue::String(s)) => s.clone(),
+            other => panic!("{id}: {other:?}"),
+        }
+    }
+
+    fn number(params: &BTreeMap<String, ParamValue>, id: &str) -> f32 {
+        match params.get(id) {
+            Some(ParamValue::F32(v)) => *v,
+            other => panic!("{id}: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn matrix_ids_are_what_migration_writes() {
+        // If nice-plug ever named the slots differently, migrated patches would load into
+        // nothing. This pins the ids.
+        let params = SynthParams::default();
+        let ids: Vec<String> = params.param_map().into_iter().map(|(id, _, _)| id).collect();
+        for slot in 1..=MATRIX_SLOTS {
+            for name in ["mod_src", "mod_dst", "mod_amt"] {
+                assert!(ids.contains(&format!("{name}_{slot}")), "{name}_{slot}");
+            }
+        }
+        assert!(!ids.iter().any(|id| OLD_MOD_KNOBS.iter().any(|k| k.0 == id)));
+    }
+
+    #[test]
+    fn old_knobs_move_into_slots_in_order() {
+        let mut params = old_patch(&[
+            ("lfo_depth", 0.5),
+            ("lfo_cut", -3.0),
+            ("menv_amt", -0.25),
+            ("menv_cut", 6.0),
+            ("cutoff", 800.0),
+        ]);
+        migrate_fixed_knobs(&mut params);
+        assert_eq!(text(&params, "mod_src_1"), "lfo");
+        assert_eq!(text(&params, "mod_dst_1"), "shape");
+        assert_eq!(number(&params, "mod_amt_1"), 0.5);
+        assert_eq!(text(&params, "mod_dst_2"), "cutoff");
+        assert_eq!(number(&params, "mod_amt_2"), -0.5); // −3 oct of ±6
+        assert_eq!(text(&params, "mod_src_3"), "menv");
+        assert_eq!(number(&params, "mod_amt_3"), -0.25);
+        assert_eq!(number(&params, "mod_amt_4"), 1.0);
+        assert!(!params.contains_key("lfo_depth") && !params.contains_key("menv_cut"));
+        assert_eq!(number(&params, "cutoff"), 800.0); // other params untouched
+    }
+
+    #[test]
+    fn knobs_left_at_zero_take_no_slot() {
+        let mut params = old_patch(&[("lfo_depth", 0.0), ("lfo_cut", 0.0), ("menv_cut", 2.0)]);
+        migrate_fixed_knobs(&mut params);
+        assert_eq!(text(&params, "mod_dst_1"), "cutoff");
+        assert!(!params.contains_key("mod_src_2"));
+        assert!(!params.contains_key("lfo_depth"));
+    }
+
+    #[test]
+    fn patches_saved_with_the_matrix_are_left_alone() {
+        let mut params = old_patch(&[("mod_amt_1", 0.3)]);
+        params.insert("mod_src_1".into(), ParamValue::String("vel".into()));
+        params.insert("lfo_cut".into(), ParamValue::F32(2.0)); // a stray old value
+        migrate_fixed_knobs(&mut params);
+        // (`ParamValue` can't be compared with `==`, so check the pieces.)
+        assert_eq!(params.len(), 3);
+        assert_eq!(text(&params, "mod_src_1"), "vel");
+        assert_eq!(number(&params, "mod_amt_1"), 0.3);
+        assert!(!params.contains_key("mod_dst_1"));
+    }
+
+    #[test]
+    fn matrix_slots_scale_to_the_destination() {
+        let slots = [
+            (SlotSource::Lfo, SlotDest::Cutoff, 0.5),
+            (SlotSource::Off, SlotDest::Pitch, 1.0),
+            (SlotSource::Random, SlotDest::Off, 1.0),
+            (SlotSource::Velocity, SlotDest::Pitch, -0.25),
+        ];
+        let routes = matrix_routes(slots.into_iter());
+        let all: Vec<_> = routes.iter().collect();
+        assert_eq!(all.len(), 2); // a blank source or destination adds nothing
+        assert_eq!(all[0].amount, 3.0); // half of ±6 oct
+        assert_eq!(all[1].amount, -6.0); // a quarter of ±24 st, flipped
     }
 
     #[test]
