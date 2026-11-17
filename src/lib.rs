@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+mod crush;
 mod editor;
 mod env;
 mod filter;
@@ -96,6 +97,18 @@ pub struct SynthParams {
     /// Peak at the cutoff: 0 = none, 1 = strong ringing (stops short of self-oscillation).
     #[id = "resonance"]
     pub resonance: FloatParam,
+
+    // Bitcrusher, applied in each voice after the filter (see `crush.rs`).
+    /// Bit depth: 16 = clean, 1 = harshest.
+    #[id = "crush_bits"]
+    pub crush_bits: FloatParam,
+    /// Sample-rate reduction, following the note: how many stairs each wave cycle is
+    /// cut into. Fewer = rougher. The top setting is off.
+    #[id = "crush_steps"]
+    pub crush_steps: FloatParam,
+    /// Blend between the clean (0) and crushed (1) sound.
+    #[id = "crush_mix"]
+    pub crush_mix: FloatParam,
 
     // The Mod Env is an attack/decay envelope. What it moves is set in the mod matrix.
     #[id = "menv_att"]
@@ -210,6 +223,38 @@ impl Default for SynthParams {
             .with_string_to_value(formatters::s2v_f32_hz_then_khz()),
             filter_type: EnumParam::new("Filter Type", FilterType::LowPass),
             resonance: FloatParam::new("Resonance", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 })
+                .with_smoother(SmoothingStyle::Linear(20.0))
+                .with_unit("%")
+                .with_value_to_string(formatters::v2s_f32_percentage(0))
+                .with_string_to_value(formatters::s2v_f32_percentage()),
+
+            // The defaults (both at their top, "Off") leave the sound untouched, so
+            // older patches sound the same. Turning either one down adds crush.
+            crush_bits: FloatParam::new(
+                "Crush Bits",
+                crush::MAX_BITS,
+                FloatRange::Linear { min: crush::MIN_BITS, max: crush::MAX_BITS },
+            )
+            .with_smoother(SmoothingStyle::Linear(20.0))
+            .with_value_to_string(Arc::new(|bits| {
+                if bits >= crush::MAX_BITS { "Off".into() } else { format!("{bits:.1} bit") }
+            })),
+            crush_steps: FloatParam::new(
+                "Crush Steps",
+                crush::MAX_STEPS,
+                // Skewed so the low end, where each step is most audible, gets more of
+                // the knob's travel.
+                FloatRange::Skewed {
+                    min: crush::MIN_STEPS,
+                    max: crush::MAX_STEPS,
+                    factor: FloatRange::skew_factor(-2.0),
+                },
+            )
+            .with_smoother(SmoothingStyle::Linear(20.0))
+            .with_value_to_string(Arc::new(|steps| {
+                if steps >= crush::MAX_STEPS { "Off".into() } else { format!("{steps:.0} steps") }
+            })),
+            crush_mix: FloatParam::new("Crush Mix", 1.0, FloatRange::Linear { min: 0.0, max: 1.0 })
                 .with_smoother(SmoothingStyle::Linear(20.0))
                 .with_unit("%")
                 .with_value_to_string(formatters::v2s_f32_percentage(0))
@@ -612,6 +657,9 @@ impl Plugin for Johnwave {
                 filter_type: self.params.filter_type.value(),
                 cutoff_hz: self.params.cutoff.smoothed.next(),
                 resonance: self.params.resonance.smoothed.next(),
+                crush_bits: self.params.crush_bits.smoothed.next(),
+                crush_steps: self.params.crush_steps.smoothed.next(),
+                crush_mix: self.params.crush_mix.smoothed.next(),
                 routes: self.matrix_routes(),
                 amp_env: self.adsr_settings(),
                 mod_env: self.mod_env_settings(),

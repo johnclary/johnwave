@@ -217,7 +217,8 @@ impl JohnwaveEditor {
             });
         });
 
-        // Row 3: modulation.
+        // Row 3: modulation, plus the bitcrusher (row 2, where it sits in the sound,
+        // has no room left).
         row(ui, |ui| {
             group(ui, |ui| {
                 knob_section(ui, "Mod Envelope", |ui| {
@@ -241,6 +242,13 @@ impl JohnwaveEditor {
                     toggle_button(ui, "RETRIG", &p.lfo_retrigger, &setter);
                     toggle_button(ui, "SYNC", &p.lfo_sync, &setter);
                     ui.add_enabled_ui(synced, |ui| stepper(ui, &p.lfo_division, &setter));
+                });
+            });
+            group(ui, |ui| {
+                knob_section(ui, "Crush", |ui| {
+                    ui.add(Knob::new(&p.crush_bits, &setter, "Bits"));
+                    ui.add(Knob::new(&p.crush_steps, &setter, "Steps"));
+                    ui.add(Knob::new(&p.crush_mix, &setter, "Mix"));
                 });
             });
         });

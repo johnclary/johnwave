@@ -4,8 +4,9 @@
 //! oscillator's phase, filter memory, both envelopes and its LFO. A `VoicePool` holds a
 //! fixed set of voices and decides which voice plays each new note.
 //!
-//! Signal path for one voice: oscillator → low-pass filter → volume envelope × velocity.
+//! Signal path for one voice: oscillator → bitcrusher → filter → volume envelope × velocity.
 
+use crate::crush::{self, Crusher};
 use crate::env::{Adsr, AdsrSettings};
 use crate::filter::{Filter, FilterType};
 use crate::lfo::{Lfo, LfoOut};
@@ -30,6 +31,12 @@ pub struct VoiceParams {
     pub filter_type: FilterType,
     pub cutoff_hz: f32,
     pub resonance: f32,
+    /// Bitcrusher bit depth (`crush::MIN_BITS..=MAX_BITS`).
+    pub crush_bits: f32,
+    /// Bitcrusher stairs per wave cycle (`crush::MIN_STEPS..=MAX_STEPS`, top = off).
+    pub crush_steps: f32,
+    /// 0 = clean, 1 = fully crushed.
+    pub crush_mix: f32,
     /// Which modulation source moves which setting (see `modulation.rs`).
     pub routes: Routes,
     pub amp_env: AdsrSettings,
@@ -47,6 +54,7 @@ pub struct Voice {
     velocity: Smoother<f32>,
     osc: MorphOsc,
     filter: Filter,
+    crusher: Crusher,
     amp_env: Adsr,
     mod_env: Adsr,
     lfo: Lfo,
@@ -67,6 +75,7 @@ impl Default for Voice {
             velocity: Smoother::new(SmoothingStyle::Linear(5.0)),
             osc: MorphOsc::default(),
             filter: Filter::default(),
+            crusher: Crusher::default(),
             amp_env: Adsr::default(),
             mod_env: Adsr::default(),
             lfo: Lfo::default(),
@@ -84,10 +93,11 @@ impl Voice {
 
     /// Begin a note. The voice's own LFO restarts (used when LFO Retrigger is on).
     pub fn start(&mut self, note: u8, velocity: f32, age: u64, sample_rate: f32) {
-        // A silent voice starts with an empty filter. A voice that's still sounding keeps
-        // its filter memory, so the takeover doesn't click.
+        // A silent voice starts with an empty filter and crusher. A voice that's still
+        // sounding keeps their memory, so the takeover doesn't click.
         if !self.is_active() {
             self.filter.reset();
+            self.crusher.reset();
         }
         self.glide_to(note);
         self.held = true;
@@ -117,6 +127,7 @@ impl Voice {
         self.held = false;
         self.osc.reset();
         self.filter.reset();
+        self.crusher.reset();
         self.amp_env.reset();
         self.mod_env.reset();
         self.lfo.reset();
@@ -149,9 +160,16 @@ impl Voice {
         self.morph = (p.morph + off.morph).clamp(0.0, 1.0);
         let osc = self.osc.next(freq, sample_rate, self.morph);
 
+        // Crush straight after the oscillator, so the filter can smooth its harsh edges,
+        // and before the volume envelope, so the grit stays the same as a note fades.
+        // The stairs follow `freq` (bend and pitch mod included) to stay in tune.
+        let hold = crush::hold_length(p.crush_steps, freq, sample_rate);
+        let crushed = self.crusher.process(osc, p.crush_bits, hold);
+        let mixed = osc + (crushed - osc) * p.crush_mix;
+
         let cutoff = p.cutoff_hz * off.cutoff_oct.exp2();
         let resonance = p.resonance + off.resonance;
-        let filtered = self.filter.process(osc, p.filter_type, cutoff, resonance, sample_rate);
+        let filtered = self.filter.process(mixed, p.filter_type, cutoff, resonance, sample_rate);
 
         let amp = self.amp_env.next(&p.amp_env, sample_rate);
         self.level = amp * velocity;
@@ -246,6 +264,9 @@ mod tests {
         filter_type: FilterType::LowPass,
         cutoff_hz: 20_000.0,
         resonance: 0.0,
+        crush_bits: crate::crush::MAX_BITS,
+        crush_steps: crate::crush::MAX_STEPS,
+        crush_mix: 1.0,
         routes: Routes::EMPTY,
         amp_env: AdsrSettings {
             attack_s: 0.005,
@@ -414,5 +435,35 @@ mod tests {
         run(&mut pool, 1.0);
         assert!(sounding(&pool).is_empty());
         assert!(run(&mut pool, 0.01).iter().all(|&x| x == 0.0));
+    }
+
+    fn render(p: &VoiceParams) -> Vec<f32> {
+        let mut v = Voice::default();
+        v.start(57, 1.0, 1, SR);
+        (0..(0.1 * SR) as usize).map(|_| v.next(p, SR)).collect()
+    }
+
+    #[test]
+    fn crusher_defaults_leave_the_sound_alone() {
+        // Mix 0 skips the crusher entirely, so it's the true clean sound.
+        let clean = render(&VoiceParams { crush_mix: 0.0, ..PARAMS });
+        let default = render(&PARAMS);
+        for (i, (a, b)) in clean.iter().zip(&default).enumerate() {
+            assert!((a - b).abs() < 1e-4, "sample {i}: {a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn crushing_adds_high_end_and_mix_blends_it() {
+        // A sine is smooth, so its sample-to-sample changes are small. Steps from the
+        // crusher make big jumps, which `brightness` picks up.
+        let sine = VoiceParams { morph: 0.0, ..PARAMS };
+        let clean = brightness(&sine);
+        let bits = brightness(&VoiceParams { crush_bits: 3.0, ..sine });
+        let rate = brightness(&VoiceParams { crush_steps: 8.0, ..sine });
+        let half = brightness(&VoiceParams { crush_bits: 3.0, crush_mix: 0.5, ..sine });
+        assert!(bits > clean * 2.0, "bits {bits} vs clean {clean}");
+        assert!(rate > clean * 2.0, "rate {rate} vs clean {clean}");
+        assert!(half > clean && half < bits, "half {half}, clean {clean}, full {bits}");
     }
 }
