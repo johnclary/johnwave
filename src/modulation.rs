@@ -15,6 +15,12 @@
 //! - Cutoff: octaves (+1 doubles the cutoff, −1 halves it)
 //! - Resonance: resonance units (1.0 = the whole 0–100% range)
 //! - Pitch: semitones
+//! - Bits (crusher bit depth): bits
+//! - Steps (crusher stairs per cycle): octaves (+1 doubles the steps, −1 halves them)
+//! - Mix (crusher blend): mix units (1.0 = the whole 0–100% range)
+//!
+//! As with every knob, a positive amount turns it clockwise. For Bits and Steps that
+//! means cleaner, so a negative amount is what adds crush.
 
 use nice_plug::prelude::*;
 use std::sync::Arc;
@@ -49,6 +55,9 @@ pub enum ModDest {
     Cutoff,
     Resonance,
     Pitch,
+    CrushBits,
+    CrushSteps,
+    CrushMix,
 }
 
 impl ModDest {
@@ -59,6 +68,10 @@ impl ModDest {
             ModDest::Cutoff => 6.0,
             ModDest::Resonance => 1.0,
             ModDest::Pitch => 24.0,
+            ModDest::CrushBits => crate::crush::MAX_BITS - crate::crush::MIN_BITS,
+            // From the top (256) to the bottom (2) is 7 halvings.
+            ModDest::CrushSteps => (crate::crush::MAX_STEPS / crate::crush::MIN_STEPS).log2(),
+            ModDest::CrushMix => 1.0,
         }
     }
 
@@ -66,9 +79,12 @@ impl ModDest {
     pub fn format_amount(self, amount: f32) -> String {
         let value = amount * self.max_amount();
         match self {
-            ModDest::Morph | ModDest::Resonance => format!("{:+.0}%", value * 100.0),
-            ModDest::Cutoff => format!("{value:+.1} oct"),
+            ModDest::Morph | ModDest::Resonance | ModDest::CrushMix => {
+                format!("{:+.0}%", value * 100.0)
+            }
+            ModDest::Cutoff | ModDest::CrushSteps => format!("{value:+.1} oct"),
             ModDest::Pitch => format!("{value:+.1} st"),
+            ModDest::CrushBits => format!("{value:+.1} bits"),
         }
     }
 }
@@ -121,6 +137,15 @@ pub enum SlotDest {
     Resonance,
     #[id = "pitch"]
     Pitch,
+    #[id = "crush_bits"]
+    #[name = "Bits"]
+    CrushBits,
+    #[id = "crush_steps"]
+    #[name = "Steps"]
+    CrushSteps,
+    #[id = "crush_mix"]
+    #[name = "Mix"]
+    CrushMix,
 }
 
 impl SlotDest {
@@ -132,6 +157,9 @@ impl SlotDest {
             SlotDest::Cutoff => Some(ModDest::Cutoff),
             SlotDest::Resonance => Some(ModDest::Resonance),
             SlotDest::Pitch => Some(ModDest::Pitch),
+            SlotDest::CrushBits => Some(ModDest::CrushBits),
+            SlotDest::CrushSteps => Some(ModDest::CrushSteps),
+            SlotDest::CrushMix => Some(ModDest::CrushMix),
         }
     }
 
@@ -259,6 +287,9 @@ pub struct ModOffsets {
     pub cutoff_oct: f32,
     pub resonance: f32,
     pub pitch_st: f32,
+    pub crush_bits: f32,
+    pub crush_steps_oct: f32,
+    pub crush_mix: f32,
 }
 
 impl ModOffsets {
@@ -268,6 +299,9 @@ impl ModOffsets {
             ModDest::Cutoff => self.cutoff_oct += value,
             ModDest::Resonance => self.resonance += value,
             ModDest::Pitch => self.pitch_st += value,
+            ModDest::CrushBits => self.crush_bits += value,
+            ModDest::CrushSteps => self.crush_steps_oct += value,
+            ModDest::CrushMix => self.crush_mix += value,
         }
     }
 }

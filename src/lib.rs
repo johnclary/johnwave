@@ -42,6 +42,10 @@ pub struct Johnwave {
     /// The pitch bend wheel, 0..1 with 0.5 = centred. Smoothed, because MIDI sends the
     /// wheel as a series of small jumps that would otherwise sound steppy.
     bend: Smoother<f32>,
+    /// The Crush switch as a 0..1 fade, so flipping it mid-note doesn't click.
+    crush_fade: Smoother<f32>,
+    /// What `crush_fade` is heading for (1 = on), to spot when the switch changes.
+    crush_target: f32,
     /// The plugin window's size and whether it's open.
     editor_state: Arc<EguiEditorState>,
     /// The Morph the window's waveform shows, or NaN when nothing is playing. The audio
@@ -98,7 +102,10 @@ pub struct SynthParams {
     #[id = "resonance"]
     pub resonance: FloatParam,
 
-    // Bitcrusher, applied in each voice after the filter (see `crush.rs`).
+    // Bitcrusher, applied in each voice before the filter (see `crush.rs`).
+    /// The on/off switch. While off, the knobs (and routes to them) do nothing.
+    #[id = "crush_on"]
+    pub crush_on: BoolParam,
     /// Bit depth: 16 = clean, 1 = harshest.
     #[id = "crush_bits"]
     pub crush_bits: FloatParam,
@@ -228,11 +235,12 @@ impl Default for SynthParams {
                 .with_value_to_string(formatters::v2s_f32_percentage(0))
                 .with_string_to_value(formatters::s2v_f32_percentage()),
 
-            // The defaults (both at their top, "Off") leave the sound untouched, so
-            // older patches sound the same. Turning either one down adds crush.
+            // Off by default, so older patches sound the same. The knobs start somewhere
+            // you can hear, so switching Crush on does something straight away.
+            crush_on: BoolParam::new("Crush", false),
             crush_bits: FloatParam::new(
                 "Crush Bits",
-                crush::MAX_BITS,
+                8.0,
                 FloatRange::Linear { min: crush::MIN_BITS, max: crush::MAX_BITS },
             )
             .with_smoother(SmoothingStyle::Linear(20.0))
@@ -241,7 +249,7 @@ impl Default for SynthParams {
             })),
             crush_steps: FloatParam::new(
                 "Crush Steps",
-                crush::MAX_STEPS,
+                16.0,
                 // Skewed so the low end, where each step is most audible, gets more of
                 // the knob's travel.
                 FloatRange::Skewed {
@@ -415,6 +423,8 @@ impl Default for Johnwave {
             free_lfo: Lfo::default(),
             mode: VoiceMode::Poly,
             bend: centred_bend(),
+            crush_fade: Smoother::new(SmoothingStyle::Linear(10.0)),
+            crush_target: 0.0,
             editor_state: editor::default_state(),
             display_morph: Arc::new(AtomicF32::new(f32::NAN)),
             display_level: Arc::new(AtomicF32::new(0.0)),
@@ -519,6 +529,11 @@ impl Johnwave {
 
     /// The mod matrix slots, as routes. Reading `.smoothed.next()` advances each amount's
     /// smoother by one sample, so this is called exactly once per sample.
+    /// The Crush switch as a number: 1 = on, 0 = off.
+    fn crush_switch(&self) -> f32 {
+        if self.params.crush_on.value() { 1.0 } else { 0.0 }
+    }
+
     fn matrix_routes(&self) -> Routes {
         matrix_routes(self.params.mod_slots.iter().map(|slot| {
             // Every amount smoother advances, even for an Off slot, so turning the slot
@@ -609,6 +624,9 @@ impl Plugin for Johnwave {
         self.notes.clear();
         self.free_lfo.reset();
         self.bend.reset(0.5);
+        // Start at the switch's position, with no fade.
+        self.crush_target = self.crush_switch();
+        self.crush_fade.reset(self.crush_target);
     }
 
     fn process(
@@ -620,6 +638,14 @@ impl Plugin for Johnwave {
         let lfo_rate = self.update_lfo_rate(context.transport());
         let shared_lfo_on = !self.params.lfo_retrigger.value();
         let mut next_event = context.next_event();
+
+        // The Crush switch fades rather than jumps. Only start a new fade when it flips,
+        // since setting the target restarts the fade from wherever it is.
+        let crush_target = self.crush_switch();
+        if crush_target != self.crush_target {
+            self.crush_target = crush_target;
+            self.crush_fade.set_target(self.sample_rate, crush_target);
+        }
 
         // Switching between Poly and Mono releases whatever was playing, so no voice
         // gets stuck on.
@@ -657,6 +683,7 @@ impl Plugin for Johnwave {
                 filter_type: self.params.filter_type.value(),
                 cutoff_hz: self.params.cutoff.smoothed.next(),
                 resonance: self.params.resonance.smoothed.next(),
+                crush_amount: self.crush_fade.next(),
                 crush_bits: self.params.crush_bits.smoothed.next(),
                 crush_steps: self.params.crush_steps.smoothed.next(),
                 crush_mix: self.params.crush_mix.smoothed.next(),

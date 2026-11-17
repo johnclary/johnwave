@@ -245,10 +245,30 @@ impl JohnwaveEditor {
                 });
             });
             group(ui, |ui| {
-                knob_section(ui, "Crush", |ui| {
-                    ui.add(Knob::new(&p.crush_bits, &setter, "Bits"));
-                    ui.add(Knob::new(&p.crush_steps, &setter, "Steps"));
-                    ui.add(Knob::new(&p.crush_mix, &setter, "Mix"));
+                // The knobs grey out while Crush is switched off.
+                let crush_on = p.crush_on.value();
+                section_heading(ui, "Crush", |ui| toggle_button(ui, "ON", &p.crush_on, &setter));
+                knob_row(ui, |ui| {
+                    // Bits is a straight line from 1 to 16, so one bit is 1/15 of the way.
+                    ui.add_enabled(crush_on, Knob::new(&p.crush_bits, &setter, "Bits").mod_span(mod_span(
+                        &routes,
+                        ModDest::CrushBits,
+                        |offset| p.crush_bits.modulated_normalized_value() + offset / 15.0,
+                    )));
+                    // Steps routes are in octaves, like Cutoff.
+                    ui.add_enabled(crush_on, Knob::new(&p.crush_steps, &setter, "Steps").mod_span(mod_span(
+                        &routes,
+                        ModDest::CrushSteps,
+                        |offset| {
+                            let steps = p.crush_steps.modulated_plain_value() * offset.exp2();
+                            p.crush_steps.preview_normalized(steps)
+                        },
+                    )));
+                    ui.add_enabled(crush_on, Knob::new(&p.crush_mix, &setter, "Mix").mod_span(mod_span(
+                        &routes,
+                        ModDest::CrushMix,
+                        |offset| p.crush_mix.modulated_normalized_value() + offset,
+                    )));
                 });
             });
         });

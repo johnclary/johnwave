@@ -31,6 +31,8 @@ pub struct VoiceParams {
     pub filter_type: FilterType,
     pub cutoff_hz: f32,
     pub resonance: f32,
+    /// The Crush switch: 0 = bypassed, 1 = on, fading in between.
+    pub crush_amount: f32,
     /// Bitcrusher bit depth (`crush::MIN_BITS..=MAX_BITS`).
     pub crush_bits: f32,
     /// Bitcrusher stairs per wave cycle (`crush::MIN_STEPS..=MAX_STEPS`, top = off).
@@ -163,9 +165,19 @@ impl Voice {
         // Crush straight after the oscillator, so the filter can smooth its harsh edges,
         // and before the volume envelope, so the grit stays the same as a note fades.
         // The stairs follow `freq` (bend and pitch mod included) to stay in tune.
-        let hold = crush::hold_length(p.crush_steps, freq, sample_rate);
-        let crushed = self.crusher.process(osc, p.crush_bits, hold);
-        let mixed = osc + (crushed - osc) * p.crush_mix;
+        // Steps are moved in octaves, like cutoff: −1 oct halves them. With the switch
+        // off the crusher is skipped entirely, routes and all.
+        let mixed = if p.crush_amount > 0.0 {
+            let bits = (p.crush_bits + off.crush_bits).clamp(crush::MIN_BITS, crush::MAX_BITS);
+            let steps = (p.crush_steps * off.crush_steps_oct.exp2())
+                .clamp(crush::MIN_STEPS, crush::MAX_STEPS);
+            let crush_mix = (p.crush_mix + off.crush_mix).clamp(0.0, 1.0) * p.crush_amount;
+            let hold = crush::hold_length(steps, freq, sample_rate);
+            let crushed = self.crusher.process(osc, bits, hold);
+            osc + (crushed - osc) * crush_mix
+        } else {
+            osc
+        };
 
         let cutoff = p.cutoff_hz * off.cutoff_oct.exp2();
         let resonance = p.resonance + off.resonance;
@@ -264,6 +276,9 @@ mod tests {
         filter_type: FilterType::LowPass,
         cutoff_hz: 20_000.0,
         resonance: 0.0,
+        // Switched on, but with both knobs at their top ("Off"), so the tests start
+        // from the clean sound and turn on only the crush they're testing.
+        crush_amount: 1.0,
         crush_bits: crate::crush::MAX_BITS,
         crush_steps: crate::crush::MAX_STEPS,
         crush_mix: 1.0,
@@ -465,5 +480,37 @@ mod tests {
         assert!(bits > clean * 2.0, "bits {bits} vs clean {clean}");
         assert!(rate > clean * 2.0, "rate {rate} vs clean {clean}");
         assert!(half > clean && half < bits, "half {half}, clean {clean}, full {bits}");
+    }
+
+    #[test]
+    fn modulation_can_bring_in_the_crusher_from_off() {
+        // Both crush knobs at Off. A full-velocity note with a velocity route pushing
+        // Bits or Steps down should sound rougher than with no route.
+        let sine = VoiceParams { morph: 0.0, ..PARAMS };
+        let clean = brightness(&sine);
+        let routed = |dest: ModDest, amount: f32| {
+            let mut routes = Routes::EMPTY;
+            routes.add(ModSource::Velocity, dest, amount);
+            brightness(&VoiceParams { routes, ..sine })
+        };
+        let bits = routed(ModDest::CrushBits, -13.0); // 16 → 3 bits
+        let steps = routed(ModDest::CrushSteps, -5.0); // 256 → 8 steps
+        assert!(bits > clean * 2.0, "bits {bits} vs clean {clean}");
+        assert!(steps > clean * 2.0, "steps {steps} vs clean {clean}");
+        // Pushing Mix to 0 turns a fully crushed sound clean again.
+        let mut routes = Routes::EMPTY;
+        routes.add(ModSource::Velocity, ModDest::CrushMix, -1.0);
+        let unmixed = brightness(&VoiceParams { crush_bits: 3.0, routes, ..sine });
+        assert!((unmixed - clean).abs() < clean * 0.01, "unmixed {unmixed} vs clean {clean}");
+    }
+
+    #[test]
+    fn switched_off_crusher_is_bypassed_even_with_routes() {
+        let sine = VoiceParams { morph: 0.0, ..PARAMS };
+        let clean = render(&VoiceParams { crush_mix: 0.0, ..sine }); // exactly the oscillator
+        let mut routes = Routes::EMPTY;
+        routes.add(ModSource::Velocity, ModDest::CrushBits, -13.0);
+        let off = VoiceParams { crush_amount: 0.0, crush_bits: 3.0, crush_steps: 4.0, routes, ..sine };
+        assert_eq!(render(&off), clean);
     }
 }

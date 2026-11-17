@@ -1,7 +1,7 @@
 # johnwave user manual
 
-A small polyphonic synth: one morphing oscillator, a resonant multi-type filter, two
-envelopes and an LFO.
+A small polyphonic synth: one morphing oscillator, a pitch-tracking bitcrusher, a
+resonant multi-type filter, two envelopes, an LFO and a mod matrix to route them.
 
 ## Parameters
 
@@ -52,8 +52,8 @@ Grouped as they appear in the window, top to bottom.
 |---|---|---|---|
 | A (Attack) | 1 ms – 5 s | 1 ms | Time to rise to its peak. |
 | D (Decay) | 1 ms – 10 s | 500 ms | Time to fall back to zero. |
-| To Shape | −100 to +100% | 0% | How far it pushes Shape at its peak. Negative pushes toward sine. |
-| To Cutoff | −6 to +6 oct | 0 | How far it moves the cutoff at its peak, in octaves. Negative closes the filter. |
+
+What it moves is set in the [Mod Matrix](#mod-matrix).
 
 ### LFO
 
@@ -61,11 +61,34 @@ Grouped as they appear in the window, top to bottom.
 |---|---|---|---|
 | Shape | 0–100% | Sine | The LFO's wave, morphing sine → triangle → saw → square like the oscillator. |
 | Rate | 0.05–20 Hz | 1 Hz | Speed when not synced. Greyed out while SYNC is on. |
-| To Shape | 0–100% | 0% | How far the LFO swings the oscillator's Shape, up and down. At 100% it covers the whole range. |
-| To Cutoff | −4 to +4 oct | 0 | How far the LFO swings the cutoff, in octaves. |
 | RETRIG | on / off | on | On: each new note restarts the LFO from the start of its cycle. Off: one free-running LFO shared by all notes. |
 | SYNC | on / off | off | Follow the DAW's tempo instead of Rate. |
 | Sync rate | 4 bars – 1/32 | 1/4 | Cycle length when synced, including dotted and triplet values. Greyed out while SYNC is off. |
+
+What it moves is set in the [Mod Matrix](#mod-matrix).
+
+### Crush
+
+| Param | Range | Default | What it does |
+|---|---|---|---|
+| ON | on / off | off | Switches the bitcrusher in. While off, its knobs are greyed out and do nothing, and so do mod routes to them. Flipping it fades over 10 ms, so it never clicks. |
+| Bits | 1–16 bits, Off | 8 bits | Bit depth. Fewer bits = bigger steps in volume = more grit. 16 shows as Off. |
+| Steps | 2–256 steps, Off | 16 steps | How many flat stairs each wave cycle is cut into, following the note's pitch. Fewer = rougher and more chiptune-like. 256 shows as Off. |
+| Mix | 0–100% | 100% | Blend between the clean (0%) and crushed (100%) sound. |
+
+See [The bitcrusher](#the-bitcrusher).
+
+### Mod Matrix
+
+Six slots, each a row of `[Source] [Dest] [Amount]`. Click a Source or Dest button to
+step to the next choice, right-click for the previous one. A blank button means Off. A
+slot does something only once both are set; until then its amount slider is greyed out.
+
+| Param | Range | Default | What it does |
+|---|---|---|---|
+| Source | Off, LFO, Mod Env, Velocity, Random | Off | What does the moving (see [Modulation](#modulation)). |
+| Dest | Off, Shape, Cutoff, Res, Pitch, Bits, Steps, Mix | Off | What gets moved. Bits, Steps and Mix are the Crush knobs. |
+| Amount | −100 to +100% | 0 | How far, shown in the destination's unit (like `+2.0 oct` or `−8.0 bits`). Negative flips the direction. |
 
 Hover over or drag any control to see its exact value in the readout at the top right.
 
@@ -76,7 +99,7 @@ Hover over or drag any control to see its exact value in the readout at the top 
 Each note gets its own voice, and every voice runs the same chain:
 
 ```
-oscillator → filter → amp envelope × velocity
+oscillator → bitcrusher → filter → amp envelope × velocity
 ```
 
 The voices are added together, scaled by Gain, then panned to the two output channels.
@@ -132,6 +155,28 @@ doesn't reset it.
 Cutoff modulation is measured in octaves, so a given amount sounds the same anywhere in
 the range: +1 octave always doubles the cutoff.
 
+### The bitcrusher
+
+The crusher makes the sound lo-fi in two separate ways, one per knob:
+
+- **Bits** snaps every sample to a coarse grid of volume levels, like an old sampler.
+  Fewer bits gives bigger steps, which adds grit and a hiss-like edge.
+- **Steps** holds each sample for a while before taking the next, turning the wave into
+  a staircase. A plain crusher holds for a fixed time, which adds tones that have
+  nothing to do with the note and sounds metallic on a synth. Here the hold follows the
+  note's pitch (including bend and pitch modulation), so every cycle gets the same number
+  of stairs. The added tones are then all harmonics of the note: it stays in tune and
+  sounds like a chiptune or lo-fi sampler rather than clanging. 2–4 steps gives hollow,
+  square-ish tones; 8–16 is classic chip crunch.
+
+Each voice has its own crusher, so chords stay clean of each other's steps and every
+note can be crushed by a different amount (with Velocity or the Mod Env). It comes
+before the filter, so lowering Cutoff smooths its edges into something warmer, and
+before the amp envelope, so the grit stays the same as a note fades.
+
+Both knobs move smoothly, including in between whole values (7.5 bits, 10.3 steps), so
+they're good to sweep with modulation.
+
 ### Envelopes
 
 - **Amp envelope (ADSR)** sets each note's volume over time, multiplied by how hard you
@@ -144,12 +189,44 @@ the range: +1 octave always doubles the cutoff.
 
 ### Modulation
 
-Each modulation knob connects one source to one destination. Where several push the same
-destination, their amounts add up, and the result is kept within the destination's range.
+Each mod matrix slot connects one source to one destination by an amount. Any source can
+go to any destination. Where several slots push the same destination, their amounts add
+up, and the result is kept within the destination's range.
 
-- **Shape** = the Shape knob + Mod Env × To Shape + LFO × To Shape, kept between 0% and
-  100%.
-- **Cutoff** = the Cutoff knob, moved by the Mod Env and LFO amounts in octaves.
+Sources:
+
+- **LFO**: swings both ways, −1 to +1.
+- **Mod Env**: 0 to 1, rising and falling once per note.
+- **Velocity**: 0 to 1, how hard the note was played. Fixed for the length of the note.
+- **Random**: the LFO's sample & hold, −1 to +1. A new random level each LFO cycle,
+  following the LFO's Rate and SYNC. Each note gets its own levels while RETRIG is on.
+
+Destinations, and what a slot's amount at 100% means for each:
+
+| Dest | Unit | At 100% |
+|---|---|---|
+| Shape | Shape range | the whole 0–100% |
+| Cutoff | octaves | 6 oct (+1 oct doubles the cutoff) |
+| Res | Res range | the whole 0–100% |
+| Pitch | semitones | 24 st |
+| Bits | bits | 15 bits (the whole 1–16) |
+| Steps | octaves | 7 oct (+1 oct doubles the steps, −7 takes 256 down to 2) |
+| Mix | Crush Mix range | the whole 0–100% |
+
+A positive amount always turns the destination's knob clockwise. For Bits and Steps that
+means cleaner, so use a **negative** amount to add crush. Modulation can bring crush in
+even with the Bits or Steps knob at Off, as long as Crush is switched ON.
+
+Some starting points:
+
+- Mod Env → Cutoff, positive: a filter pluck on every note.
+- LFO → Shape: the wave slowly morphs, like a filter sweep from the source itself.
+- Mod Env → Steps, around −4 oct: each note starts chiptune-crunchy and cleans up.
+- Velocity → Bits, negative: harder hits get grittier.
+
+**Mod arcs.** A knob with a route to it shows a pink arc along its ring, covering every
+position the modulation can push it to, with a small tick marking where the knob itself
+is set. Pitch routes show on the Coarse knob.
 
 ### Poly and Mono
 
