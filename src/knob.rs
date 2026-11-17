@@ -29,6 +29,15 @@ pub struct KnobStyle {
     pub track_color: egui::Color32,
     /// Size of the name underneath ("Gain").
     pub label_text_size: f32,
+    /// Colour of the mod arc: the thin stripe along the value arc's ring showing how far
+    /// the mod matrix can push this knob.
+    pub mod_color: egui::Color32,
+    /// Thickness of the mod arc. At `arc_width` it covers the value arc completely (its
+    /// glow still shows around the edges); thinner leaves a cyan edge either side.
+    pub mod_arc_width: f32,
+    /// Thickness of the value tick: the short line across the ring marking where the
+    /// knob is set, drawn on top of the mod arc so the setting stays readable.
+    pub tick_width: f32,
 }
 
 impl Default for KnobStyle {
@@ -41,6 +50,11 @@ impl Default for KnobStyle {
             arc_color: crate::editor::cyan(),
             track_color: egui::Color32::from_gray(60),
             label_text_size: 12.0,
+            // A dusky pink, far enough round the colour wheel from the cyan to stand
+            // apart: #C95DA7, which is 319°, 54%, 79% in a normal colour picker.
+            mod_color: egui::Color32::from_rgb(0xC9, 0x5D, 0xA7),
+            mod_arc_width: 5.0,
+            tick_width: 2.0,
         }
     }
 }
@@ -81,6 +95,8 @@ pub struct Knob<'a, P: Param> {
     style: KnobStyle,
     /// Whether the arc grows out from the top centre instead of from the bottom-left.
     bipolar: bool,
+    /// How far the mod matrix can push this knob, as `(lowest, highest)` positions 0..1.
+    mod_span: Option<(f32, f32)>,
 }
 
 impl<'a, P: Param> Knob<'a, P> {
@@ -91,6 +107,7 @@ impl<'a, P: Param> Knob<'a, P> {
             label,
             style: KnobStyle::default(),
             bipolar: false,
+            mod_span: None,
         }
     }
 
@@ -99,6 +116,13 @@ impl<'a, P: Param> Knob<'a, P> {
     /// positive ones, so zero shows as no arc at all.
     pub fn bipolar(mut self) -> Self {
         self.bipolar = true;
+        self
+    }
+
+    /// Show how far the mod matrix can push this knob: a thin arc between two positions
+    /// 0..1 on the knob. `None` (nothing routed here) draws no arc.
+    pub fn mod_span(mut self, span: Option<(f32, f32)>) -> Self {
+        self.mod_span = span;
         self
     }
 
@@ -228,6 +252,40 @@ impl<P: Param> egui::Widget for Knob<'_, P> {
                     points,
                     egui::Stroke::new(style.arc_width, arc_color),
                 ));
+            }
+
+            // The mod arc: drawn along the value arc's ring, after it so it sits on top
+            // (see `mod_arc_width` for how much cyan it leaves showing). Even a tiny span
+            // gets a few points of arc, so a route with a small amount is still visible.
+            if let Some((lo, hi)) = self.mod_span {
+                let min_len = 0.02;
+                let (lo, hi) = if hi - lo < min_len {
+                    let mid = ((lo + hi) / 2.0).clamp(min_len / 2.0, 1.0 - min_len / 2.0);
+                    (mid - min_len / 2.0, mid + min_len / 2.0)
+                } else {
+                    (lo, hi)
+                };
+                let mod_color = if enabled {
+                    style.mod_color
+                } else {
+                    style.mod_color.gamma_multiply(0.3)
+                };
+                painter.add(egui::Shape::line(
+                    arc_points(center, radius, lo, hi),
+                    egui::Stroke::new(style.mod_arc_width, mod_color),
+                ));
+
+                // The value tick: a short line straight across the ring at the knob's
+                // value, a little longer than the ring is wide so it pokes out both
+                // sides. Only drawn with a mod arc, since otherwise the cyan arc's end
+                // already shows the value.
+                let angle = START_ANGLE + SWEEP * value;
+                let direction = egui::vec2(angle.cos(), angle.sin());
+                let half = style.arc_width / 2.0 + 1.5;
+                painter.line_segment(
+                    [center + direction * (radius - half), center + direction * (radius + half)],
+                    egui::Stroke::new(style.tick_width, arc_color),
+                );
             }
 
             let visuals = ui.visuals();

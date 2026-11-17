@@ -32,6 +32,16 @@ pub enum ModSource {
     Random,
 }
 
+impl ModSource {
+    /// The lowest and highest values this source can reach.
+    pub fn range(self) -> (f32, f32) {
+        match self {
+            ModSource::Lfo | ModSource::Random => (-1.0, 1.0),
+            ModSource::ModEnv | ModSource::Velocity => (0.0, 1.0),
+        }
+    }
+}
+
 /// Settings that can be modulated.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ModDest {
@@ -272,6 +282,23 @@ pub fn apply(routes: &Routes, sources: &ModSources) -> ModOffsets {
     offsets
 }
 
+/// How far the routes can push `dest`, as `(lowest, highest)` offsets in its unit, or
+/// `None` if nothing is routed to it. The knobs draw this as their mod arc.
+///
+/// Each route reaches from `amount × source's lowest` to `amount × source's highest`
+/// (swapped when the amount is negative). Routes to the same destination add up, so
+/// their lowest points add and their highest points add.
+pub fn dest_span(routes: &Routes, dest: ModDest) -> Option<(f32, f32)> {
+    let mut span = None;
+    for route in routes.iter().filter(|r| r.dest == dest) {
+        let (lo, hi) = route.source.range();
+        let (a, b) = (lo * route.amount, hi * route.amount);
+        let (total_lo, total_hi) = span.unwrap_or((0.0, 0.0));
+        span = Some((total_lo + a.min(b), total_hi + a.max(b)));
+    }
+    span
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,6 +341,30 @@ mod tests {
         let off = apply(&routes, &SOURCES);
         assert_eq!(off.pitch_st, 12.0);
         assert_eq!(off.resonance, -0.25);
+    }
+
+    #[test]
+    fn span_of_an_unrouted_destination_is_none() {
+        let mut routes = Routes::EMPTY;
+        routes.add(ModSource::Lfo, ModDest::Cutoff, 2.0);
+        assert_eq!(dest_span(&routes, ModDest::Morph), None);
+    }
+
+    #[test]
+    fn span_follows_the_sources_range_and_sign() {
+        let mut routes = Routes::EMPTY;
+        routes.add(ModSource::Lfo, ModDest::Cutoff, 2.0); // bipolar: both ways
+        routes.add(ModSource::ModEnv, ModDest::Pitch, -12.0); // unipolar, flipped
+        assert_eq!(dest_span(&routes, ModDest::Cutoff), Some((-2.0, 2.0)));
+        assert_eq!(dest_span(&routes, ModDest::Pitch), Some((-12.0, 0.0)));
+    }
+
+    #[test]
+    fn spans_of_routes_to_the_same_destination_add_up() {
+        let mut routes = Routes::EMPTY;
+        routes.add(ModSource::Lfo, ModDest::Morph, 0.25); // −0.25..+0.25
+        routes.add(ModSource::Velocity, ModDest::Morph, 0.5); // 0..+0.5
+        assert_eq!(dest_span(&routes, ModDest::Morph), Some((-0.25, 0.75)));
     }
 
     #[test]

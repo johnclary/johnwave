@@ -309,7 +309,7 @@ fn pitch_offset_st(bend: f32, bend_range_st: f32, coarse_st: f32, fine_cents: f3
 /// Turn matrix slots (source, destination, amount −1..=1) into routes, scaling each
 /// amount to its destination's unit. A slot with a blank source or destination is
 /// skipped.
-fn matrix_routes(slots: impl Iterator<Item = (SlotSource, SlotDest, f32)>) -> Routes {
+pub(crate) fn matrix_routes(slots: impl Iterator<Item = (SlotSource, SlotDest, f32)>) -> Routes {
     let mut routes = Routes::EMPTY;
     for (source, dest, amount) in slots {
         if let (Some(source), Some(dest)) = (source.source(), dest.dest()) {

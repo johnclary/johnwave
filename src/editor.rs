@@ -8,7 +8,7 @@
 use crate::filter::FilterType;
 use crate::knob::Knob;
 use crate::slider::Slider;
-use crate::modulation::{ModSlotParams, SlotDest, SlotSource};
+use crate::modulation::{dest_span, ModDest, ModSlotParams, Routes, SlotDest, SlotSource};
 use crate::trail::Trail;
 use crate::{SynthParams, VoiceMode};
 use nice_plug::context::gui::GuiContext;
@@ -104,6 +104,12 @@ impl NiceEguiApp for JohnwaveEditor {
 impl JohnwaveEditor {
     fn contents(&self, ui: &mut egui::Ui, setter: &ParamSetter) {
         let p = &self.params;
+        // The mod matrix as routes, so the knobs can show how far they're being pushed.
+        let routes = crate::matrix_routes(
+            p.mod_slots
+                .iter()
+                .map(|slot| (slot.source.value(), slot.dest.value(), slot.amount.value())),
+        );
 
         // Header: the title and the Poly/Mono switch on the left, the readout box at the
         // right edge.
@@ -132,7 +138,11 @@ impl JohnwaveEditor {
         row(ui, |ui| {
             group(ui, |ui| {
                 knob_section(ui, "Oscillator", |ui| {
-                    ui.add(Knob::new(&p.morph, &setter, "Shape"));
+                    ui.add(Knob::new(&p.morph, &setter, "Shape").mod_span(mod_span(
+                        &routes,
+                        ModDest::Morph,
+                        |offset| p.morph.modulated_normalized_value() + offset,
+                    )));
                     // The shape the knob is set to (the screen on the right shows what's
                     // actually playing, after modulation).
                     let morph = p.morph.value();
@@ -141,7 +151,13 @@ impl JohnwaveEditor {
             });
             group(ui, |ui| {
                 knob_section(ui, "Tuning", |ui| {
-                    ui.add(Knob::new(&p.coarse, &setter, "Coarse").bipolar());
+                    // Pitch routes show here, since Coarse is in semitones too. Its range is
+                    // 48 semitones (−24..+24), so one semitone is 1/48 of the way round.
+                    ui.add(Knob::new(&p.coarse, &setter, "Coarse").bipolar().mod_span(mod_span(
+                        &routes,
+                        ModDest::Pitch,
+                        |offset| p.coarse.modulated_normalized_value() + offset / 48.0,
+                    )));
                     ui.add(Knob::new(&p.fine, &setter, "Fine").bipolar());
                     ui.add(Knob::new(&p.bend_range, &setter, "Bend"));
                 });
@@ -160,8 +176,20 @@ impl JohnwaveEditor {
         row(ui, |ui| {
             group(ui, |ui| {
                 knob_section(ui, "Filter", |ui| {
-                    ui.add(Knob::new(&p.cutoff, &setter, "Cutoff"));
-                    ui.add(Knob::new(&p.resonance, &setter, "Res"));
+                    // Cutoff routes are in octaves: each one doubles (or halves) the Hz.
+                    ui.add(Knob::new(&p.cutoff, &setter, "Cutoff").mod_span(mod_span(
+                        &routes,
+                        ModDest::Cutoff,
+                        |offset| {
+                            let hz = p.cutoff.modulated_plain_value() * offset.exp2();
+                            p.cutoff.preview_normalized(hz)
+                        },
+                    )));
+                    ui.add(Knob::new(&p.resonance, &setter, "Res").mod_span(mod_span(
+                        &routes,
+                        ModDest::Resonance,
+                        |offset| p.resonance.modulated_normalized_value() + offset,
+                    )));
                 });
                 // The type sits under its knobs, like the LFO's buttons under its own.
                 ui.add_space(6.0);
@@ -235,6 +263,14 @@ const AMOUNT_SLIDER_WIDTH: f32 = 160.0;
 
 /// The mod matrix: every slot as a row, `[Source] [Dest] [amount]`. A new slot is
 /// blank (both Off), and a slot only does something once both are set.
+/// Where a knob's mod arc reaches, as knob positions 0..1, or `None` if nothing is routed
+/// to `dest`. `to_position` turns an offset (in the destination's unit) into the knob
+/// position its value would land on.
+fn mod_span(routes: &Routes, dest: ModDest, to_position: impl Fn(f32) -> f32) -> Option<(f32, f32)> {
+    dest_span(routes, dest)
+        .map(|(lo, hi)| (to_position(lo).clamp(0.0, 1.0), to_position(hi).clamp(0.0, 1.0)))
+}
+
 fn mod_matrix(ui: &mut egui::Ui, slots: &[ModSlotParams], setter: &ParamSetter) {
     ui.spacing_mut().item_spacing.y = 4.0;
     for slot in slots {
