@@ -25,6 +25,18 @@ impl MorphOsc {
         self.phase = 0.0;
     }
 
+    /// Where in the cycle it is (0..1).
+    #[cfg(test)]
+    pub fn phase(&self) -> f32 {
+        self.phase
+    }
+
+    /// Jump to a point in the cycle (0..1). Osc 2 uses this to start each note at a
+    /// random point, so two oscillators at the same pitch don't always line up the same way.
+    pub fn set_phase(&mut self, phase: f32) {
+        self.phase = wrap(phase);
+    }
+
     /// Produce one sample and advance the phase.
     ///
     /// `morph` runs 0..=1: 0 = sine, ⅓ = triangle, ⅔ = saw, 1 = square, crossfading in between.

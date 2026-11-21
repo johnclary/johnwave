@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 /// Window size in points. On a Retina screen egui draws at twice this many pixels.
 pub const WIDTH: f64 = 760.0;
-pub const HEIGHT: f64 = 600.0;
+pub const HEIGHT: f64 = 710.0;
 
 pub fn default_state() -> Arc<EguiEditorState> {
     EguiEditorState::from_size(LogicalSize::new(WIDTH, HEIGHT), 1.0)
@@ -169,6 +169,40 @@ impl JohnwaveEditor {
                 let morph = self.display_morph.load(Ordering::Relaxed);
                 let level = self.display_level.load(Ordering::Relaxed);
                 osc_display(ui, morph, level, &self.trail, height);
+            });
+        });
+
+        // Row 1b: the second oscillator. Its own row for now, since row 1 is full; the
+        // layout rework will find it a proper home.
+        row(ui, |ui| {
+            group(ui, |ui| {
+                // The knobs grey out while Osc 2 is switched off.
+                let osc2_on = p.osc2_on.value();
+                section_heading(ui, "Osc 2", |ui| toggle_button(ui, "ON", &p.osc2_on, &setter));
+                knob_row(ui, |ui| {
+                    ui.add_enabled(osc2_on, Knob::new(&p.osc2_morph, &setter, "Shape").mod_span(mod_span(
+                        &routes,
+                        ModDest::Osc2Morph,
+                        |offset| p.osc2_morph.modulated_normalized_value() + offset,
+                    )));
+                    let morph2 = p.osc2_morph.value();
+                    knob_wave(ui, |phase| crate::osc::shape(phase, 0.0, morph2));
+                    // Pitch 2 routes show here. The range is 72 semitones (−36..+36).
+                    ui.add_enabled(
+                        osc2_on,
+                        Knob::new(&p.osc2_coarse, &setter, "Coarse").bipolar().mod_span(mod_span(
+                            &routes,
+                            ModDest::Osc2Pitch,
+                            |offset| p.osc2_coarse.modulated_normalized_value() + offset / 72.0,
+                        )),
+                    );
+                    ui.add_enabled(osc2_on, Knob::new(&p.osc2_fine, &setter, "Fine").bipolar());
+                    ui.add_enabled(osc2_on, Knob::new(&p.osc_mix, &setter, "Mix").mod_span(mod_span(
+                        &routes,
+                        ModDest::OscMix,
+                        |offset| p.osc_mix.modulated_normalized_value() + offset,
+                    )));
+                });
             });
         });
 
@@ -365,8 +399,8 @@ fn cycler<T: Enum + PartialEq + Copy + 'static>(
     crate::readout::report(ui, param, &response);
 }
 
-/// Wide enough for the longest choice ("Velocity").
-const CYCLER_WIDTH: f32 = 72.0;
+/// Wide enough for the longest choice ("Crush Mix").
+const CYCLER_WIDTH: f32 = 80.0;
 
 /// Space between groups in a row, and between rows.
 const GROUP_GAP: f32 = 32.0;

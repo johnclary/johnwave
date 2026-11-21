@@ -43,9 +43,9 @@ pub struct Johnwave {
     /// wheel as a series of small jumps that would otherwise sound steppy.
     bend: Smoother<f32>,
     /// The Crush switch as a 0..1 fade, so flipping it mid-note doesn't click.
-    crush_fade: Smoother<f32>,
-    /// What `crush_fade` is heading for (1 = on), to spot when the switch changes.
-    crush_target: f32,
+    crush_fade: SwitchFade,
+    /// The same for the Osc 2 switch.
+    osc2_fade: SwitchFade,
     /// The plugin window's size and whether it's open.
     editor_state: Arc<EguiEditorState>,
     /// The Morph the window's waveform shows, or NaN when nothing is playing. The audio
@@ -75,6 +75,22 @@ pub struct SynthParams {
     /// 0 = sine, 33% = triangle, 67% = saw, 100% = square.
     #[id = "morph"]
     pub morph: FloatParam,
+
+    // The second oscillator. Off by default, so older patches sound the same.
+    #[id = "osc2_on"]
+    pub osc2_on: BoolParam,
+    /// Osc 2's wave, like Shape.
+    #[id = "osc2_morph"]
+    pub osc2_morph: FloatParam,
+    /// Osc 2's tuning against osc 1, in whole semitones.
+    #[id = "osc2_coarse"]
+    pub osc2_coarse: IntParam,
+    /// Osc 2's tuning against osc 1, in cents.
+    #[id = "osc2_fine"]
+    pub osc2_fine: FloatParam,
+    /// The blend: 0 = only osc 1, 100% = only osc 2.
+    #[id = "osc_mix"]
+    pub osc_mix: FloatParam,
 
     /// LFO speed in Hz.
     #[id = "lfo_rate"]
@@ -197,6 +213,26 @@ impl Default for SynthParams {
             // Shown as "Shape" (it used to be "Morph"). The code still calls it `morph`,
             // and the id stays "morph" so saved projects and automation keep working.
             morph: FloatParam::new("Shape", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 })
+                .with_smoother(SmoothingStyle::Linear(20.0))
+                .with_unit("%")
+                .with_value_to_string(formatters::v2s_f32_percentage(0))
+                .with_string_to_value(formatters::s2v_f32_percentage()),
+
+            osc2_on: BoolParam::new("Osc 2", false),
+            osc2_morph: FloatParam::new("Osc 2 Shape", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 })
+                .with_smoother(SmoothingStyle::Linear(20.0))
+                .with_unit("%")
+                .with_value_to_string(formatters::v2s_f32_percentage(0))
+                .with_string_to_value(formatters::s2v_f32_percentage()),
+            osc2_coarse: IntParam::new("Osc 2 Coarse", 0, IntRange::Linear { min: -36, max: 36 })
+                .with_unit(" st"),
+            // A few cents off by default, so switching osc 2 on thickens the sound
+            // straight away instead of just doubling it.
+            osc2_fine: FloatParam::new("Osc 2 Fine", 7.0, FloatRange::Linear { min: -100.0, max: 100.0 })
+                .with_smoother(SmoothingStyle::Linear(20.0))
+                .with_unit(" ct")
+                .with_value_to_string(Arc::new(|ct| format!("{ct:+.0}"))),
+            osc_mix: FloatParam::new("Osc Mix", 0.5, FloatRange::Linear { min: 0.0, max: 1.0 })
                 .with_smoother(SmoothingStyle::Linear(20.0))
                 .with_unit("%")
                 .with_value_to_string(formatters::v2s_f32_percentage(0))
@@ -431,6 +467,44 @@ fn migrate_mod_env_release(params: &mut BTreeMap<String, ParamValue>) {
     }
 }
 
+/// An on/off switch as a 0..1 fade (10 ms), so flipping it mid-note doesn't click.
+struct SwitchFade {
+    fade: Smoother<f32>,
+    /// Where the fade is heading, to spot when the switch flips.
+    on: bool,
+}
+
+impl Default for SwitchFade {
+    fn default() -> Self {
+        Self {
+            fade: Smoother::new(SmoothingStyle::Linear(10.0)),
+            on: false,
+        }
+    }
+}
+
+impl SwitchFade {
+    /// Jump straight to the switch's position, with no fade.
+    fn reset(&mut self, on: bool) {
+        self.on = on;
+        self.fade.reset(if on { 1.0 } else { 0.0 });
+    }
+
+    /// Once per block. Only starts a new fade when the switch flips, since setting the
+    /// target restarts the fade from wherever it is.
+    fn update(&mut self, on: bool, sample_rate: f32) {
+        if on != self.on {
+            self.on = on;
+            self.fade.set_target(sample_rate, if on { 1.0 } else { 0.0 });
+        }
+    }
+
+    /// The fade for this sample.
+    fn next(&mut self) -> f32 {
+        self.fade.next()
+    }
+}
+
 /// A bend smoother that starts with the wheel centred. 5 ms is quick enough to feel
 /// immediate but smooths out the jumps between MIDI bend messages.
 fn centred_bend() -> Smoother<f32> {
@@ -449,8 +523,8 @@ impl Default for Johnwave {
             free_lfo: Lfo::default(),
             mode: VoiceMode::Poly,
             bend: centred_bend(),
-            crush_fade: Smoother::new(SmoothingStyle::Linear(10.0)),
-            crush_target: 0.0,
+            crush_fade: SwitchFade::default(),
+            osc2_fade: SwitchFade::default(),
             editor_state: editor::default_state(),
             display_morph: Arc::new(AtomicF32::new(f32::NAN)),
             display_level: Arc::new(AtomicF32::new(0.0)),
@@ -555,10 +629,6 @@ impl Johnwave {
 
     /// The mod matrix slots, as routes. Reading `.smoothed.next()` advances each amount's
     /// smoother by one sample, so this is called exactly once per sample.
-    /// The Crush switch as a number: 1 = on, 0 = off.
-    fn crush_switch(&self) -> f32 {
-        if self.params.crush_on.value() { 1.0 } else { 0.0 }
-    }
 
     fn matrix_routes(&self) -> Routes {
         matrix_routes(self.params.mod_slots.iter().map(|slot| {
@@ -648,9 +718,9 @@ impl Plugin for Johnwave {
         self.notes.clear();
         self.free_lfo.reset();
         self.bend.reset(0.5);
-        // Start at the switch's position, with no fade.
-        self.crush_target = self.crush_switch();
-        self.crush_fade.reset(self.crush_target);
+        // Start at the switches' positions, with no fade.
+        self.crush_fade.reset(self.params.crush_on.value());
+        self.osc2_fade.reset(self.params.osc2_on.value());
     }
 
     fn process(
@@ -663,13 +733,9 @@ impl Plugin for Johnwave {
         let shared_lfo_on = !self.params.lfo_retrigger.value();
         let mut next_event = context.next_event();
 
-        // The Crush switch fades rather than jumps. Only start a new fade when it flips,
-        // since setting the target restarts the fade from wherever it is.
-        let crush_target = self.crush_switch();
-        if crush_target != self.crush_target {
-            self.crush_target = crush_target;
-            self.crush_fade.set_target(self.sample_rate, crush_target);
-        }
+        // The Crush and Osc 2 switches fade rather than jump.
+        self.crush_fade.update(self.params.crush_on.value(), self.sample_rate);
+        self.osc2_fade.update(self.params.osc2_on.value(), self.sample_rate);
 
         // Switching between Poly and Mono releases whatever was playing, so no voice
         // gets stuck on.
@@ -695,6 +761,11 @@ impl Plugin for Johnwave {
             let shared = self.free_lfo.next(lfo_rate, self.sample_rate, lfo_shape);
             let p = VoiceParams {
                 morph: self.params.morph.smoothed.next(),
+                osc2_amount: self.osc2_fade.next(),
+                osc2_morph: self.params.osc2_morph.smoothed.next(),
+                osc2_pitch_st: self.params.osc2_coarse.value() as f32
+                    + self.params.osc2_fine.smoothed.next() / 100.0,
+                osc_mix: self.params.osc_mix.smoothed.next(),
                 lfo_rate,
                 lfo_shape,
                 shared_lfo: shared_lfo_on.then_some(shared),

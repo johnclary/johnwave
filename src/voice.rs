@@ -4,7 +4,8 @@
 //! oscillator's phase, filter memory, both envelopes and its LFO. A `VoicePool` holds a
 //! fixed set of voices and decides which voice plays each new note.
 //!
-//! Signal path for one voice: oscillator → bitcrusher → filter → volume envelope × velocity.
+//! Signal path for one voice: oscillators 1 + 2 (blended by Osc Mix) → bitcrusher →
+//! filter → volume envelope × velocity.
 
 use crate::crush::{self, Crusher};
 use crate::env::{Adsr, AdsrSettings};
@@ -14,12 +15,20 @@ use crate::modulation::{self, ModSources, Routes};
 use crate::osc::MorphOsc;
 use nice_plug::prelude::{Smoother, SmoothingStyle};
 use nice_plug::util;
+use std::f32::consts::FRAC_PI_2;
 
 pub const NUM_VOICES: usize = 8;
 
 /// Knob values for the current sample, shared by every voice.
 pub struct VoiceParams {
     pub morph: f32,
+    /// The Osc 2 switch: 0 = off, 1 = on, fading in between.
+    pub osc2_amount: f32,
+    pub osc2_morph: f32,
+    /// Osc 2's tuning relative to osc 1, in semitones (Osc 2 Coarse + Fine).
+    pub osc2_pitch_st: f32,
+    /// 0 = only osc 1, 1 = only osc 2.
+    pub osc_mix: f32,
     pub lfo_rate: f32,
     /// 0 = sine, ⅓ = triangle, ⅔ = saw, 1 = square.
     pub lfo_shape: f32,
@@ -55,6 +64,9 @@ pub struct Voice {
     freq: f32,
     velocity: Smoother<f32>,
     osc: MorphOsc,
+    osc2: MorphOsc,
+    /// State of a tiny random number generator, for osc 2's start phase.
+    rng: u32,
     filter: Filter,
     crusher: Crusher,
     amp_env: Adsr,
@@ -76,6 +88,8 @@ impl Default for Voice {
             freq: 440.0,
             velocity: Smoother::new(SmoothingStyle::Linear(5.0)),
             osc: MorphOsc::default(),
+            osc2: MorphOsc::default(),
+            rng: 0x2545_F491, // any non-zero starting value works
             filter: Filter::default(),
             crusher: Crusher::default(),
             amp_env: Adsr::default(),
@@ -111,6 +125,27 @@ impl Voice {
         // levels, so a chord's voices don't all jump to the same place.
         self.lfo.seed(age);
         self.lfo.reset();
+        // Osc 2 starts each note at a random point in its cycle. If it always started
+        // in step with osc 1, the same tuning could sound full on one note and thin
+        // (partly cancelled) on the next, depending on where osc 1 happened to be.
+        let phase = self.random_phase(age);
+        self.osc2.set_phase(phase);
+    }
+
+    /// A random number in 0..1. Mixing in `age` stops a chord's voices all picking the
+    /// same number. Mono notes all have age 0, but the generator moves on every call,
+    /// so they still differ.
+    fn random_phase(&mut self, age: u64) -> f32 {
+        let mut x = self.rng ^ (age as u32).wrapping_mul(0x9E37_79B9);
+        if x == 0 {
+            x = 1; // xorshift gets stuck at 0
+        }
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.rng = x;
+        // The top 24 bits, as a fraction (an f32 holds 24 bits exactly).
+        (x >> 8) as f32 / (1u32 << 24) as f32
     }
 
     /// Change pitch without retriggering anything (mono legato).
@@ -128,6 +163,7 @@ impl Voice {
     pub fn reset(&mut self) {
         self.held = false;
         self.osc.reset();
+        self.osc2.reset();
         self.filter.reset();
         self.crusher.reset();
         self.amp_env.reset();
@@ -160,11 +196,27 @@ impl Voice {
         // The oscillator clamps morph to 0..=1 and the filter clamps resonance.
         let freq = self.freq * ((p.pitch_st + off.pitch_st) / 12.0).exp2();
         self.morph = (p.morph + off.morph).clamp(0.0, 1.0);
-        let osc = self.osc.next(freq, sample_rate, self.morph);
+        let osc1 = self.osc.next(freq, sample_rate, self.morph);
+
+        // Osc 2 is tuned relative to osc 1, so bend, Coarse, Fine and Pitch routes move
+        // both together. With the switch fully off it isn't run at all.
+        let osc = if p.osc2_amount > 0.0 {
+            let freq2 = freq * ((p.osc2_pitch_st + off.osc2_pitch_st) / 12.0).exp2();
+            let morph2 = (p.osc2_morph + off.osc2_morph).clamp(0.0, 1.0);
+            let osc2 = self.osc2.next(freq2, sample_rate, morph2);
+            // Equal-power crossfade: detuned oscillators add like noise (by power), so a
+            // plain 50/50 blend would dip about 3 dB in the middle. Fading the switch
+            // off slides the mix back to pure osc 1.
+            let mix = (p.osc_mix + off.osc_mix).clamp(0.0, 1.0) * p.osc2_amount;
+            let angle = mix * FRAC_PI_2;
+            osc1 * angle.cos() + osc2 * angle.sin()
+        } else {
+            osc1
+        };
 
         // Crush straight after the oscillator, so the filter can smooth its harsh edges,
         // and before the volume envelope, so the grit stays the same as a note fades.
-        // The stairs follow `freq` (bend and pitch mod included) to stay in tune.
+        // The stairs follow osc 1's `freq` (bend and pitch mod included) to stay in tune.
         // Steps are moved in octaves, like cutoff: −1 oct halves them. With the switch
         // off the crusher is skipped entirely, routes and all.
         let mixed = if p.crush_amount > 0.0 {
@@ -269,6 +321,11 @@ mod tests {
     const SR: f32 = 48_000.0;
     const PARAMS: VoiceParams = VoiceParams {
         morph: 0.5,
+        // Osc 2 off, with its knobs where you'd find them on first switching it on.
+        osc2_amount: 0.0,
+        osc2_morph: 0.0,
+        osc2_pitch_st: 0.07,
+        osc_mix: 0.5,
         lfo_rate: 1.0,
         lfo_shape: 0.0,
         shared_lfo: None,
@@ -512,5 +569,88 @@ mod tests {
         routes.add(ModSource::Velocity, ModDest::CrushBits, -13.0);
         let off = VoiceParams { crush_amount: 0.0, crush_bits: 3.0, crush_steps: 4.0, routes, ..sine };
         assert_eq!(render(&off), clean);
+    }
+
+    /// Osc 2 on at full Mix, so only osc 2 is heard. Both oscillators are sines.
+    const OSC2_ONLY: VoiceParams = VoiceParams {
+        morph: 0.0,
+        osc2_amount: 1.0,
+        osc2_morph: 0.0,
+        osc2_pitch_st: 0.0,
+        osc_mix: 1.0,
+        ..PARAMS
+    };
+
+    #[test]
+    fn osc2_switched_off_changes_nothing() {
+        let plain = render(&PARAMS);
+        // Osc 2's knobs and routes do nothing while it's off...
+        let mut routes = Routes::EMPTY;
+        routes.add(ModSource::Velocity, ModDest::OscMix, 1.0);
+        routes.add(ModSource::Velocity, ModDest::Osc2Pitch, 7.0);
+        let off = VoiceParams { osc2_morph: 1.0, osc_mix: 1.0, routes, ..PARAMS };
+        assert_eq!(render(&off), plain);
+        // ...and switched on at Mix 0 it's exactly osc 1 too.
+        let mix_zero = VoiceParams { osc2_amount: 1.0, osc_mix: 0.0, ..PARAMS };
+        assert_eq!(render(&mix_zero), plain);
+    }
+
+    #[test]
+    fn osc2_is_tuned_relative_to_osc1() {
+        let near = |f: f32, hz: f32| (f - hz).abs() <= 2.0;
+        let up = measured_freq(&VoiceParams { osc2_pitch_st: 12.0, ..OSC2_ONLY });
+        assert!(near(up, 440.0), "{up}");
+        let down = measured_freq(&VoiceParams { osc2_pitch_st: -36.0, ..OSC2_ONLY });
+        assert!(near(down, 27.5), "{down}");
+        // Shared pitch (bend, Coarse) moves osc 2 along with osc 1.
+        let shared = measured_freq(&VoiceParams { pitch_st: 12.0, ..OSC2_ONLY });
+        assert!(near(shared, 440.0), "{shared}");
+        // A Pitch 2 route adds on top of the knob.
+        let mut routes = Routes::EMPTY;
+        routes.add(ModSource::Velocity, ModDest::Osc2Pitch, 5.0);
+        let routed = measured_freq(&VoiceParams { osc2_pitch_st: 7.0, routes, ..OSC2_ONLY });
+        assert!(near(routed, 440.0), "{routed}");
+    }
+
+    #[test]
+    fn osc2_starts_each_note_somewhere_new() {
+        // The same voice, retriggered (as in mono, where every note has age 0).
+        let mut v = Voice::default();
+        let mut phases = Vec::new();
+        for _ in 0..4 {
+            v.start(60, 1.0, 0, SR);
+            phases.push(v.osc2.phase());
+        }
+        // A chord: fresh voices, which all start with the same generator state.
+        let mut pool = VoicePool::default();
+        for n in [60, 64, 67] {
+            on(&mut pool, n);
+        }
+        phases.extend(pool.voices[..3].iter().map(|v| v.osc2.phase()));
+        for (i, a) in phases.iter().enumerate() {
+            assert!((0.0..1.0).contains(a));
+            for b in &phases[i + 1..] {
+                assert!((a - b).abs() > 1e-3, "repeated phase {a} in {phases:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn mix_keeps_the_level_even() {
+        // Osc 2 a semitone up, so the two drift in and out of phase like a real detune.
+        // Level is measured once the envelope has settled, over enough beats to average.
+        let rms_at = |mix: f32| {
+            let p = VoiceParams { osc2_pitch_st: 1.0, osc_mix: mix, ..OSC2_ONLY };
+            let mut v = Voice::default();
+            v.start(57, 1.0, 1, SR);
+            let out: Vec<f32> = (0..(1.5 * SR) as usize).map(|_| v.next(&p, SR)).collect();
+            let tail = &out[(0.5 * SR) as usize..];
+            (tail.iter().map(|x| x * x).sum::<f32>() / tail.len() as f32).sqrt()
+        };
+        let solo = rms_at(0.0);
+        for mix in [0.25, 0.5, 0.75, 1.0] {
+            let level = rms_at(mix);
+            assert!((level - solo).abs() / solo < 0.05, "mix {mix}: {level} vs {solo}");
+        }
     }
 }

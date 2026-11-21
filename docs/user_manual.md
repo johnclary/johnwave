@@ -1,6 +1,6 @@
 # johnwave user manual
 
-A small polyphonic synth: one morphing oscillator, a pitch-tracking bitcrusher, a
+A small polyphonic synth: two morphing oscillators, a pitch-tracking bitcrusher, a
 resonant multi-type filter, two envelopes, an LFO and a mod matrix to route them.
 
 ## Parameters
@@ -19,12 +19,24 @@ Grouped as they appear in the window, top to bottom.
 |---|---|---|---|
 | Shape | 0–100% | 0% | Morphs the wave: 0% sine, 33% triangle, 67% saw, 100% square, blending smoothly in between. |
 
+### Osc 2
+
+| Param | Range | Default | What it does |
+|---|---|---|---|
+| ON | on / off | off | Switches the second oscillator in. While off, its knobs are greyed out and do nothing, and so do mod routes to them. Flipping it fades over 10 ms, so it never clicks. |
+| Shape | 0–100% | 0% | Osc 2's wave, morphing sine → triangle → saw → square like the main Shape. |
+| Coarse | −36 to +36 st | 0 | Osc 2's tuning against osc 1, in semitones. |
+| Fine | −100 to +100 ct | +7 ct | Osc 2's tuning against osc 1, in cents. A few cents off gives a thick, slowly beating sound. |
+| Mix | 0–100% | 50% | Blend between osc 1 (0%) and osc 2 (100%). |
+
+See [Two oscillators](#two-oscillators).
+
 ### Tuning
 
 | Param | Range | Default | What it does |
 |---|---|---|---|
-| Coarse | −24 to +24 st | 0 | Transpose in semitones. |
-| Fine | −100 to +100 ct | 0 | Fine tune in cents (100 cents = 1 semitone). |
+| Coarse | −24 to +24 st | 0 | Transpose in semitones. Moves both oscillators. |
+| Fine | −100 to +100 ct | 0 | Fine tune in cents (100 cents = 1 semitone). Moves both oscillators. |
 | Bend | 0–24 st | 2 | How far the pitch bend wheel reaches, each way. |
 
 ### Filter
@@ -89,7 +101,7 @@ slot does something only once both are set; until then its amount slider is grey
 | Param | Range | Default | What it does |
 |---|---|---|---|
 | Source | Off, LFO, Mod Env, Velocity, Random | Off | What does the moving (see [Modulation](#modulation)). |
-| Dest | Off, Shape, Cutoff, Res, Pitch, Bits, Steps, Mix | Off | What gets moved. Bits, Steps and Mix are the Crush knobs. |
+| Dest | Off, Shape, Shape 2, Osc Mix, Cutoff, Res, Pitch, Pitch 2, Bits, Steps, Crush Mix | Off | What gets moved. Shape 2, Osc Mix and Pitch 2 are the Osc 2 knobs; Bits, Steps and Crush Mix are the Crush knobs. |
 | Amount | −100 to +100% | 0 | How far, shown in the destination's unit (like `+2.0 oct` or `−8.0 bits`). Negative flips the direction. |
 
 Hover over or drag any control to see its exact value in the readout at the top right.
@@ -101,7 +113,7 @@ Hover over or drag any control to see its exact value in the readout at the top 
 Each note gets its own voice, and every voice runs the same chain:
 
 ```
-oscillator → bitcrusher → filter → amp envelope × velocity
+osc 1 + osc 2 (blended by Mix) → bitcrusher → filter → amp envelope × velocity
 ```
 
 The voices are added together, scaled by Gain, then panned to the two output channels.
@@ -131,6 +143,36 @@ Moving from sine toward square adds harmonics: sine has none, triangle has faint
 harmonics, saw has all of them, and square has strong odd ones. In practice, Shape is a
 brightness control with character, and modulating it (with the LFO or Mod Envelope)
 gives movement much like a filter sweep, but from the source itself.
+
+### Two oscillators
+
+Osc 2 is a second copy of the morphing oscillator, tuned relative to osc 1. Bend, the
+Tuning knobs and Pitch routes move both together, so they always stay in tune with each
+other. Osc 2's own Coarse, Fine and Pitch 2 routes add on top.
+
+Some ways to use it:
+
+- **Detune.** Leave Coarse at 0 and set Fine a few cents off (the default +7). The two
+  drift in and out of phase, which gives the thick, moving sound of classic leads and
+  pads. More cents = faster beating.
+- **Layers.** Coarse at +12 or +7 adds an octave or a fifth on top; −12 with a sine
+  Shape adds a sub.
+- **Two timbres.** Give each oscillator a different Shape and use Mix (or a route to
+  Osc Mix) to move between them.
+- **Moving detune.** A small LFO → Pitch 2 route wobbles osc 2 alone, so the
+  thickness breathes.
+
+Mix is an equal-power crossfade. Two detuned oscillators add up by power, not by
+level, so a plain 50/50 blend would dip by about 3 dB in the middle. This way the
+loudness stays even across the whole knob.
+
+Each note starts osc 2 at a random point in its cycle. If it always started in step
+with osc 1, two oscillators at the same pitch could partly cancel on one note and sound
+full on the next.
+
+The bitcrusher comes after the blend, and its Steps follow osc 1's pitch. With osc 2
+tuned to another interval, its stairs don't land evenly on its own cycle, which adds a
+little extra grit.
 
 ### The filter
 
@@ -211,13 +253,15 @@ Destinations, and what a slot's amount at 100% means for each:
 
 | Dest | Unit | At 100% |
 |---|---|---|
-| Shape | Shape range | the whole 0–100% |
+| Shape, Shape 2 | Shape range | the whole 0–100% |
+| Osc Mix | Mix range | the whole 0–100% |
 | Cutoff | octaves | 6 oct (+1 oct doubles the cutoff) |
 | Res | Res range | the whole 0–100% |
-| Pitch | semitones | 24 st |
+| Pitch | semitones | 24 st (both oscillators) |
+| Pitch 2 | semitones | 36 st (osc 2 only) |
 | Bits | bits | 15 bits (the whole 1–16) |
 | Steps | octaves | 7 oct (+1 oct doubles the steps, −7 takes 256 down to 2) |
-| Mix | Crush Mix range | the whole 0–100% |
+| Crush Mix | Crush Mix range | the whole 0–100% |
 
 A positive amount always turns the destination's knob clockwise. For Bits and Steps that
 means cleaner, so use a **negative** amount to add crush. Modulation can bring crush in
@@ -229,10 +273,11 @@ Some starting points:
 - LFO → Shape: the wave slowly morphs, like a filter sweep from the source itself.
 - Mod Env → Steps, around −4 oct: each note starts chiptune-crunchy and cleans up.
 - Velocity → Bits, negative: harder hits get grittier.
+- Mod Env → Pitch 2: osc 2 starts off-pitch and slides in, a "zap" on every note.
 
 **Mod arcs.** A knob with a route to it shows a pink arc along its ring, covering every
 position the modulation can push it to, with a small tick marking where the knob itself
-is set. Pitch routes show on the Coarse knob.
+is set. Pitch routes show on the Coarse knob, and Pitch 2 routes on Osc 2's Coarse.
 
 ### Poly and Mono
 
@@ -252,8 +297,8 @@ beginning of its cycle, which suits per-note wobbles that start the same way eve
 
 ### The screens
 
-- **Oscillator screen** (under the readout): what is playing right now, after
-  modulation, drawn as tall as the newest note is loud. Recent shapes leave a short
+- **Oscillator screen** (under the readout): what osc 1 is playing right now, after
+  modulation, drawn as tall as the newest note is loud. Osc 2 isn't shown. Recent shapes leave a short
   fading trail. With nothing playing it shows a flat line.
 - **Small waves** beside each Shape knob: the shape that knob is set to, without
   modulation.

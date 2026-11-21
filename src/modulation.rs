@@ -11,10 +11,11 @@
 //! destination works with every existing one.
 //!
 //! Every destination has its own unit, which is what a route's amount means:
-//! - Morph: morph units (1.0 = the whole sine → square range)
+//! - Morph, Osc 2 Morph: morph units (1.0 = the whole sine → square range)
+//! - Osc Mix: mix units (1.0 = the whole osc 1 → osc 2 range)
 //! - Cutoff: octaves (+1 doubles the cutoff, −1 halves it)
 //! - Resonance: resonance units (1.0 = the whole 0–100% range)
-//! - Pitch: semitones
+//! - Pitch (both oscillators), Osc 2 Pitch (osc 2 only): semitones
 //! - Bits (crusher bit depth): bits
 //! - Steps (crusher stairs per cycle): octaves (+1 doubles the steps, −1 halves them)
 //! - Mix (crusher blend): mix units (1.0 = the whole 0–100% range)
@@ -52,6 +53,9 @@ impl ModSource {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ModDest {
     Morph,
+    Osc2Morph,
+    Osc2Pitch,
+    OscMix,
     Cutoff,
     Resonance,
     Pitch,
@@ -65,6 +69,10 @@ impl ModDest {
     pub fn max_amount(self) -> f32 {
         match self {
             ModDest::Morph => 1.0,
+            ModDest::Osc2Morph => 1.0,
+            // The same reach as the Osc 2 Coarse knob.
+            ModDest::Osc2Pitch => 36.0,
+            ModDest::OscMix => 1.0,
             ModDest::Cutoff => 6.0,
             ModDest::Resonance => 1.0,
             ModDest::Pitch => 24.0,
@@ -79,11 +87,15 @@ impl ModDest {
     pub fn format_amount(self, amount: f32) -> String {
         let value = amount * self.max_amount();
         match self {
-            ModDest::Morph | ModDest::Resonance | ModDest::CrushMix => {
+            ModDest::Morph
+            | ModDest::Osc2Morph
+            | ModDest::OscMix
+            | ModDest::Resonance
+            | ModDest::CrushMix => {
                 format!("{:+.0}%", value * 100.0)
             }
             ModDest::Cutoff | ModDest::CrushSteps => format!("{value:+.1} oct"),
-            ModDest::Pitch => format!("{value:+.1} st"),
+            ModDest::Pitch | ModDest::Osc2Pitch => format!("{value:+.1} st"),
             ModDest::CrushBits => format!("{value:+.1} bits"),
         }
     }
@@ -130,6 +142,12 @@ pub enum SlotDest {
     Off,
     #[id = "shape"]
     Shape,
+    #[id = "shape2"]
+    #[name = "Shape 2"]
+    Shape2,
+    #[id = "osc_mix"]
+    #[name = "Osc Mix"]
+    OscMix,
     #[id = "cutoff"]
     Cutoff,
     #[id = "res"]
@@ -137,6 +155,9 @@ pub enum SlotDest {
     Resonance,
     #[id = "pitch"]
     Pitch,
+    #[id = "pitch2"]
+    #[name = "Pitch 2"]
+    Pitch2,
     #[id = "crush_bits"]
     #[name = "Bits"]
     CrushBits,
@@ -144,7 +165,7 @@ pub enum SlotDest {
     #[name = "Steps"]
     CrushSteps,
     #[id = "crush_mix"]
-    #[name = "Mix"]
+    #[name = "Crush Mix"]
     CrushMix,
 }
 
@@ -154,9 +175,12 @@ impl SlotDest {
         match self {
             SlotDest::Off => None,
             SlotDest::Shape => Some(ModDest::Morph),
+            SlotDest::Shape2 => Some(ModDest::Osc2Morph),
+            SlotDest::OscMix => Some(ModDest::OscMix),
             SlotDest::Cutoff => Some(ModDest::Cutoff),
             SlotDest::Resonance => Some(ModDest::Resonance),
             SlotDest::Pitch => Some(ModDest::Pitch),
+            SlotDest::Pitch2 => Some(ModDest::Osc2Pitch),
             SlotDest::CrushBits => Some(ModDest::CrushBits),
             SlotDest::CrushSteps => Some(ModDest::CrushSteps),
             SlotDest::CrushMix => Some(ModDest::CrushMix),
@@ -284,6 +308,9 @@ impl ModSources {
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
 pub struct ModOffsets {
     pub morph: f32,
+    pub osc2_morph: f32,
+    pub osc2_pitch_st: f32,
+    pub osc_mix: f32,
     pub cutoff_oct: f32,
     pub resonance: f32,
     pub pitch_st: f32,
@@ -296,6 +323,9 @@ impl ModOffsets {
     fn add(&mut self, dest: ModDest, value: f32) {
         match dest {
             ModDest::Morph => self.morph += value,
+            ModDest::Osc2Morph => self.osc2_morph += value,
+            ModDest::Osc2Pitch => self.osc2_pitch_st += value,
+            ModDest::OscMix => self.osc_mix += value,
             ModDest::Cutoff => self.cutoff_oct += value,
             ModDest::Resonance => self.resonance += value,
             ModDest::Pitch => self.pitch_st += value,
@@ -406,6 +436,8 @@ mod tests {
         assert_eq!(ModDest::Cutoff.format_amount(0.5), "+3.0 oct");
         assert_eq!(ModDest::Morph.format_amount(-0.35), "-35%");
         assert_eq!(ModDest::Pitch.format_amount(0.5), "+12.0 st");
+        assert_eq!(ModDest::Osc2Pitch.format_amount(-1.0), "-36.0 st");
+        assert_eq!(ModDest::OscMix.format_amount(0.25), "+25%");
     }
 
     #[test]
