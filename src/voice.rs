@@ -4,8 +4,9 @@
 //! oscillator's phase, filter memory, both envelopes and its LFO. A `VoicePool` holds a
 //! fixed set of voices and decides which voice plays each new note.
 //!
-//! Signal path for one voice: oscillators 1 + 2 (blended by Osc Mix) → bitcrusher →
-//! filter → volume envelope × velocity.
+//! Signal path for one voice: oscillators 1 + 2 (blended by Osc Mix), as several
+//! unison copies spread across left and right → bitcrusher → filter → volume envelope ×
+//! velocity. Everything after the oscillators runs once per side, so a voice is stereo.
 
 use crate::crush::{self, Crusher};
 use crate::env::{Adsr, AdsrSettings};
@@ -13,6 +14,7 @@ use crate::filter::{Filter, FilterType};
 use crate::lfo::{Lfo, LfoOut};
 use crate::modulation::{self, ModSources, Routes};
 use crate::osc::MorphOsc;
+use crate::unison::{self, MAX_VOICES as MAX_COPIES};
 use nice_plug::prelude::{Smoother, SmoothingStyle};
 use nice_plug::util;
 use std::f32::consts::FRAC_PI_2;
@@ -29,6 +31,12 @@ pub struct VoiceParams {
     pub osc2_pitch_st: f32,
     /// 0 = only osc 1, 1 = only osc 2.
     pub osc_mix: f32,
+    /// How many unison copies each voice plays (1 = no unison).
+    pub unison_voices: usize,
+    /// How far the outer copies are detuned, in cents.
+    pub unison_detune_ct: f32,
+    /// Left/right gains of each copy (see `unison::pans`).
+    pub unison_pan: [(f32, f32); MAX_COPIES],
     pub lfo_rate: f32,
     /// 0 = sine, ⅓ = triangle, ⅔ = saw, 1 = square.
     pub lfo_shape: f32,
@@ -63,12 +71,14 @@ pub struct Voice {
     age: u64,
     freq: f32,
     velocity: Smoother<f32>,
-    osc: MorphOsc,
-    osc2: MorphOsc,
-    /// State of a tiny random number generator, for osc 2's start phase.
+    /// Osc 1 and osc 2 of each unison copy. Only the first `unison_voices` run.
+    osc1: [MorphOsc; MAX_COPIES],
+    osc2: [MorphOsc; MAX_COPIES],
+    /// State of a tiny random number generator, for the oscillators' start phases.
     rng: u32,
-    filter: Filter,
-    crusher: Crusher,
+    /// One filter and one crusher per side: [left, right].
+    filter: [Filter; 2],
+    crusher: [Crusher; 2],
     amp_env: Adsr,
     mod_env: Adsr,
     lfo: Lfo,
@@ -87,11 +97,11 @@ impl Default for Voice {
             age: 0,
             freq: 440.0,
             velocity: Smoother::new(SmoothingStyle::Linear(5.0)),
-            osc: MorphOsc::default(),
-            osc2: MorphOsc::default(),
+            osc1: Default::default(),
+            osc2: Default::default(),
             rng: 0x2545_F491, // any non-zero starting value works
-            filter: Filter::default(),
-            crusher: Crusher::default(),
+            filter: Default::default(),
+            crusher: Default::default(),
             amp_env: Adsr::default(),
             mod_env: Adsr::default(),
             lfo: Lfo::default(),
@@ -112,8 +122,22 @@ impl Voice {
         // A silent voice starts with an empty filter and crusher. A voice that's still
         // sounding keeps their memory, so the takeover doesn't click.
         if !self.is_active() {
-            self.filter.reset();
-            self.crusher.reset();
+            self.filter.iter_mut().for_each(Filter::reset);
+            self.crusher.iter_mut().for_each(Crusher::reset);
+            // A silent voice can also start its oscillators anywhere without a click.
+            // Each starts at a random point in its cycle: if the unison copies started
+            // together, every note would open with a "whoosh" as they drift apart, and
+            // osc 2 would line up with osc 1 differently from note to note. Osc 1's
+            // first copy just keeps running, as it always has, so a patch without
+            // unison or osc 2 sounds exactly as before.
+            for i in 0..MAX_COPIES {
+                if i > 0 {
+                    let phase = self.random_phase(age);
+                    self.osc1[i].set_phase(phase);
+                }
+                let phase = self.random_phase(age);
+                self.osc2[i].set_phase(phase);
+            }
         }
         self.glide_to(note);
         self.held = true;
@@ -125,11 +149,6 @@ impl Voice {
         // levels, so a chord's voices don't all jump to the same place.
         self.lfo.seed(age);
         self.lfo.reset();
-        // Osc 2 starts each note at a random point in its cycle. If it always started
-        // in step with osc 1, the same tuning could sound full on one note and thin
-        // (partly cancelled) on the next, depending on where osc 1 happened to be.
-        let phase = self.random_phase(age);
-        self.osc2.set_phase(phase);
     }
 
     /// A random number in 0..1. Mixing in `age` stops a chord's voices all picking the
@@ -162,20 +181,20 @@ impl Voice {
 
     pub fn reset(&mut self) {
         self.held = false;
-        self.osc.reset();
-        self.osc2.reset();
-        self.filter.reset();
-        self.crusher.reset();
+        self.osc1.iter_mut().for_each(MorphOsc::reset);
+        self.osc2.iter_mut().for_each(MorphOsc::reset);
+        self.filter.iter_mut().for_each(Filter::reset);
+        self.crusher.iter_mut().for_each(Crusher::reset);
         self.amp_env.reset();
         self.mod_env.reset();
         self.lfo.reset();
         self.velocity.reset(0.0);
     }
 
-    /// One sample of this voice's output.
-    pub fn next(&mut self, p: &VoiceParams, sample_rate: f32) -> f32 {
+    /// One sample of this voice's output, as (left, right).
+    pub fn next(&mut self, p: &VoiceParams, sample_rate: f32) -> (f32, f32) {
         if !self.is_active() {
-            return 0.0;
+            return (0.0, 0.0);
         }
         // 1. This voice's modulation sources for this sample.
         let own_lfo = self.lfo.next(p.lfo_rate, sample_rate, p.lfo_shape);
@@ -196,48 +215,74 @@ impl Voice {
         // The oscillator clamps morph to 0..=1 and the filter clamps resonance.
         let freq = self.freq * ((p.pitch_st + off.pitch_st) / 12.0).exp2();
         self.morph = (p.morph + off.morph).clamp(0.0, 1.0);
-        let osc1 = self.osc.next(freq, sample_rate, self.morph);
 
         // Osc 2 is tuned relative to osc 1, so bend, Coarse, Fine and Pitch routes move
         // both together. With the switch fully off it isn't run at all.
-        let osc = if p.osc2_amount > 0.0 {
-            let freq2 = freq * ((p.osc2_pitch_st + off.osc2_pitch_st) / 12.0).exp2();
+        let osc2_on = p.osc2_amount > 0.0;
+        let (ratio2, morph2, gain1, gain2) = if osc2_on {
+            let ratio2 = ((p.osc2_pitch_st + off.osc2_pitch_st) / 12.0).exp2();
             let morph2 = (p.osc2_morph + off.osc2_morph).clamp(0.0, 1.0);
-            let osc2 = self.osc2.next(freq2, sample_rate, morph2);
             // Equal-power crossfade: detuned oscillators add like noise (by power), so a
             // plain 50/50 blend would dip about 3 dB in the middle. Fading the switch
             // off slides the mix back to pure osc 1.
             let mix = (p.osc_mix + off.osc_mix).clamp(0.0, 1.0) * p.osc2_amount;
             let angle = mix * FRAC_PI_2;
-            osc1 * angle.cos() + osc2 * angle.sin()
+            (ratio2, morph2, angle.cos(), angle.sin())
         } else {
-            osc1
+            (1.0, 0.0, 1.0, 0.0)
         };
 
-        // Crush straight after the oscillator, so the filter can smooth its harsh edges,
-        // and before the volume envelope, so the grit stays the same as a note fades.
-        // The stairs follow osc 1's `freq` (bend and pitch mod included) to stay in tune.
-        // Steps are moved in octaves, like cutoff: −1 oct halves them. With the switch
-        // off the crusher is skipped entirely, routes and all.
-        let mixed = if p.crush_amount > 0.0 {
+        // 4. The unison copies, each detuned and panned by its position (see
+        // `unison.rs`), added up into left and right. One copy is just the plain sound.
+        let copies = p.unison_voices.clamp(1, MAX_COPIES);
+        let detune_ct = (p.unison_detune_ct + off.unison_detune_ct).clamp(0.0, unison::MAX_DETUNE_CT);
+        let mut sides = [0.0_f32; 2];
+        for i in 0..copies {
+            let copy_freq = if copies == 1 {
+                freq
+            } else {
+                freq * (detune_ct * unison::position(i, copies) / 1200.0).exp2()
+            };
+            let mut s = self.osc1[i].next(copy_freq, sample_rate, self.morph);
+            if osc2_on {
+                s = s * gain1 + self.osc2[i].next(copy_freq * ratio2, sample_rate, morph2) * gain2;
+            }
+            let (left, right) = p.unison_pan[i];
+            sides[0] += s * left;
+            sides[1] += s * right;
+        }
+        let unison_level = unison::level(copies);
+
+        // 5. Crush straight after the oscillators, so the filter can smooth its harsh
+        // edges, and before the volume envelope, so the grit stays the same as a note
+        // fades. The stairs follow osc 1's `freq` (bend and pitch mod included) to stay
+        // in tune. Steps are moved in octaves, like cutoff: −1 oct halves them. With the
+        // switch off the crusher is skipped entirely, routes and all.
+        let crush = (p.crush_amount > 0.0).then(|| {
             let bits = (p.crush_bits + off.crush_bits).clamp(crush::MIN_BITS, crush::MAX_BITS);
             let steps = (p.crush_steps * off.crush_steps_oct.exp2())
                 .clamp(crush::MIN_STEPS, crush::MAX_STEPS);
-            let crush_mix = (p.crush_mix + off.crush_mix).clamp(0.0, 1.0) * p.crush_amount;
-            let hold = crush::hold_length(steps, freq, sample_rate);
-            let crushed = self.crusher.process(osc, bits, hold);
-            osc + (crushed - osc) * crush_mix
-        } else {
-            osc
-        };
-
+            let mix = (p.crush_mix + off.crush_mix).clamp(0.0, 1.0) * p.crush_amount;
+            (bits, crush::hold_length(steps, freq, sample_rate), mix)
+        });
         let cutoff = p.cutoff_hz * off.cutoff_oct.exp2();
         let resonance = p.resonance + off.resonance;
-        let filtered = self.filter.process(mixed, p.filter_type, cutoff, resonance, sample_rate);
 
         let amp = self.amp_env.next(&p.amp_env, sample_rate);
         self.level = amp * velocity;
-        filtered * self.level
+
+        // Each side gets its own crusher and filter. Fed the same signal (one copy, or
+        // Width at 0) they come out identical.
+        for (side, x) in sides.iter_mut().enumerate() {
+            *x *= unison_level;
+            if let Some((bits, hold, mix)) = crush {
+                let crushed = self.crusher[side].process(*x, bits, hold);
+                *x += (crushed - *x) * mix;
+            }
+            *x = self.filter[side].process(*x, p.filter_type, cutoff, resonance, sample_rate);
+            *x *= self.level;
+        }
+        (sides[0], sides[1])
     }
 }
 
@@ -307,9 +352,12 @@ impl VoicePool {
         &mut self.voices[0]
     }
 
-    /// The sum of all voices for one sample.
-    pub fn next(&mut self, p: &VoiceParams, sample_rate: f32) -> f32 {
-        self.voices.iter_mut().map(|v| v.next(p, sample_rate)).sum()
+    /// The sum of all voices for one sample, as (left, right).
+    pub fn next(&mut self, p: &VoiceParams, sample_rate: f32) -> (f32, f32) {
+        self.voices.iter_mut().fold((0.0, 0.0), |(l, r), v| {
+            let (vl, vr) = v.next(p, sample_rate);
+            (l + vl, r + vr)
+        })
     }
 }
 
@@ -326,6 +374,10 @@ mod tests {
         osc2_morph: 0.0,
         osc2_pitch_st: 0.07,
         osc_mix: 0.5,
+        // No unison.
+        unison_voices: 1,
+        unison_detune_ct: 25.0,
+        unison_pan: [(1.0, 1.0); MAX_COPIES],
         lfo_rate: 1.0,
         lfo_shape: 0.0,
         shared_lfo: None,
@@ -359,7 +411,7 @@ mod tests {
     }
 
     fn run(pool: &mut VoicePool, seconds: f32) -> Vec<f32> {
-        (0..(seconds * SR) as usize).map(|_| pool.next(&PARAMS, SR)).collect()
+        (0..(seconds * SR) as usize).map(|_| pool.next(&PARAMS, SR).0).collect()
     }
 
     /// The keys of all voices currently making sound, sorted.
@@ -385,7 +437,7 @@ mod tests {
     fn brightness(p: &VoiceParams) -> f32 {
         let mut v = Voice::default();
         v.start(45, 1.0, 1, SR);
-        let out: Vec<f32> = (0..(0.3 * SR) as usize).map(|_| v.next(p, SR)).collect();
+        let out: Vec<f32> = (0..(0.3 * SR) as usize).map(|_| v.next(p, SR).0).collect();
         let diffs: Vec<f32> = out.windows(2).map(|w| w[1] - w[0]).collect();
         (diffs.iter().map(|d| d * d).sum::<f32>() / diffs.len() as f32).sqrt()
     }
@@ -416,7 +468,7 @@ mod tests {
     fn measured_freq(p: &VoiceParams) -> f32 {
         let mut v = Voice::default();
         v.start(57, 1.0, 1, SR);
-        let out: Vec<f32> = (0..SR as usize).map(|_| v.next(p, SR)).collect();
+        let out: Vec<f32> = (0..SR as usize).map(|_| v.next(p, SR).0).collect();
         out.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count() as f32
     }
 
@@ -512,7 +564,7 @@ mod tests {
     fn render(p: &VoiceParams) -> Vec<f32> {
         let mut v = Voice::default();
         v.start(57, 1.0, 1, SR);
-        (0..(0.1 * SR) as usize).map(|_| v.next(p, SR)).collect()
+        (0..(0.1 * SR) as usize).map(|_| v.next(p, SR).0).collect()
     }
 
     #[test]
@@ -614,19 +666,23 @@ mod tests {
 
     #[test]
     fn osc2_starts_each_note_somewhere_new() {
-        // The same voice, retriggered (as in mono, where every note has age 0).
+        // The same voice, played again once silent (as in mono, where every note has
+        // age 0).
         let mut v = Voice::default();
         let mut phases = Vec::new();
         for _ in 0..4 {
             v.start(60, 1.0, 0, SR);
-            phases.push(v.osc2.phase());
+            phases.push(v.osc2[0].phase());
+            v.reset();
         }
         // A chord: fresh voices, which all start with the same generator state.
         let mut pool = VoicePool::default();
         for n in [60, 64, 67] {
             on(&mut pool, n);
         }
-        phases.extend(pool.voices[..3].iter().map(|v| v.osc2.phase()));
+        phases.extend(pool.voices[..3].iter().map(|v| v.osc2[0].phase()));
+        // And every unison copy after osc 1's first, within one voice.
+        phases.extend(pool.voices[0].osc1[1..].iter().map(MorphOsc::phase));
         for (i, a) in phases.iter().enumerate() {
             assert!((0.0..1.0).contains(a));
             for b in &phases[i + 1..] {
@@ -643,7 +699,7 @@ mod tests {
             let p = VoiceParams { osc2_pitch_st: 1.0, osc_mix: mix, ..OSC2_ONLY };
             let mut v = Voice::default();
             v.start(57, 1.0, 1, SR);
-            let out: Vec<f32> = (0..(1.5 * SR) as usize).map(|_| v.next(&p, SR)).collect();
+            let out: Vec<f32> = (0..(1.5 * SR) as usize).map(|_| v.next(&p, SR).0).collect();
             let tail = &out[(0.5 * SR) as usize..];
             (tail.iter().map(|x| x * x).sum::<f32>() / tail.len() as f32).sqrt()
         };
@@ -651,6 +707,72 @@ mod tests {
         for mix in [0.25, 0.5, 0.75, 1.0] {
             let level = rms_at(mix);
             assert!((level - solo).abs() / solo < 0.05, "mix {mix}: {level} vs {solo}");
+        }
+    }
+
+    /// Both sides of a voice playing A3, for `seconds`.
+    fn render_stereo(p: &VoiceParams, seconds: f32) -> (Vec<f32>, Vec<f32>) {
+        let mut v = Voice::default();
+        v.start(57, 1.0, 1, SR);
+        (0..(seconds * SR) as usize).map(|_| v.next(p, SR)).unzip()
+    }
+
+    /// Unison with `copies` voices, `detune` cents and `width` (0..1), on a saw.
+    fn unison(copies: usize, detune: f32, width: f32) -> VoiceParams {
+        VoiceParams {
+            morph: 2.0 / 3.0,
+            unison_voices: copies,
+            unison_detune_ct: detune,
+            unison_pan: unison::pans(copies, width),
+            ..PARAMS
+        }
+    }
+
+    #[test]
+    fn one_unison_voice_is_the_plain_mono_sound() {
+        // Detune and Width do nothing with a single copy, and both sides match.
+        let plain = render_stereo(&unison(1, 0.0, 0.0), 0.1);
+        let knobs_up = render_stereo(&unison(1, 100.0, 1.0), 0.1);
+        assert_eq!(plain, knobs_up);
+        assert_eq!(plain.0, plain.1);
+    }
+
+    #[test]
+    fn width_spreads_the_copies_apart() {
+        let (l, r) = render_stereo(&unison(5, 30.0, 0.0), 0.2);
+        assert_eq!(l, r, "Width 0 should be identical on both sides");
+        let (l, r) = render_stereo(&unison(5, 30.0, 1.0), 0.2);
+        let diff = l.iter().zip(&r).map(|(a, b)| (a - b).abs()).fold(0.0, f32::max);
+        assert!(diff > 0.05, "sides barely differ: {diff}");
+    }
+
+    #[test]
+    fn unison_keeps_the_level_even() {
+        // A wide detune, so the copies drift through each other several times within
+        // the measured stretch and their phases average out.
+        let rms_at = |copies: usize| {
+            let (l, _) = render_stereo(&unison(copies, 100.0, 0.0), 2.0);
+            let tail = &l[(0.5 * SR) as usize..];
+            (tail.iter().map(|x| x * x).sum::<f32>() / tail.len() as f32).sqrt()
+        };
+        let solo = rms_at(1);
+        for copies in 2..=MAX_COPIES {
+            let level = rms_at(copies);
+            assert!((level - solo).abs() / solo < 0.15, "{copies} copies: {level} vs {solo}");
+        }
+    }
+
+    #[test]
+    fn detune_routes_add_to_the_knob() {
+        // The shared LFO held at +1, so the route pushes the same amount from the start.
+        let held = Some(LfoOut { wave: 1.0, random: 0.0 });
+        let knob = render_stereo(&VoiceParams { shared_lfo: held, ..unison(3, 40.0, 0.5) }, 0.1);
+        let mut routes = Routes::EMPTY;
+        routes.add(ModSource::Lfo, ModDest::UnisonDetune, 30.0);
+        let routed = VoiceParams { shared_lfo: held, routes, ..unison(3, 10.0, 0.5) };
+        let routed = render_stereo(&routed, 0.1);
+        for (a, b) in knob.0.iter().zip(&routed.0) {
+            assert!((a - b).abs() < 1e-4, "{a} vs {b}");
         }
     }
 }

@@ -1,7 +1,8 @@
 # johnwave user manual
 
-A small polyphonic synth: two morphing oscillators, a pitch-tracking bitcrusher, a
-resonant multi-type filter, two envelopes, an LFO and a mod matrix to route them.
+A small polyphonic synth: two morphing oscillators with stereo unison, a pitch-tracking
+bitcrusher, a resonant multi-type filter, two envelopes, an LFO and a mod matrix to
+route them.
 
 ## Parameters
 
@@ -30,6 +31,16 @@ Grouped as they appear in the window, top to bottom.
 | Mix | 0–100% | 50% | Blend between osc 1 (0%) and osc 2 (100%). |
 
 See [Two oscillators](#two-oscillators).
+
+### Unison
+
+| Param | Range | Default | What it does |
+|---|---|---|---|
+| Voices | 1–7 | 1 | How many copies of the oscillators each note plays. 1 is no unison. |
+| Detune | 0–100 ct | 25 ct | How far the outer copies are detuned from the note, in cents. The others are spaced evenly in between. Greyed out at 1 voice. |
+| Width | 0–100% | 50% | How far the copies spread across the speakers. Greyed out at 1 voice. |
+
+See [Unison](#unison-1).
 
 ### Tuning
 
@@ -101,7 +112,7 @@ slot does something only once both are set; until then its amount slider is grey
 | Param | Range | Default | What it does |
 |---|---|---|---|
 | Source | Off, LFO, Mod Env, Velocity, Random | Off | What does the moving (see [Modulation](#modulation)). |
-| Dest | Off, Shape, Shape 2, Osc Mix, Cutoff, Res, Pitch, Pitch 2, Bits, Steps, Crush Mix | Off | What gets moved. Shape 2, Osc Mix and Pitch 2 are the Osc 2 knobs; Bits, Steps and Crush Mix are the Crush knobs. |
+| Dest | Off, Shape, Shape 2, Osc Mix, Cutoff, Res, Pitch, Pitch 2, Detune, Bits, Steps, Crush Mix | Off | What gets moved. Shape 2, Osc Mix and Pitch 2 are the Osc 2 knobs, Detune is the Unison knob, and Bits, Steps and Crush Mix are the Crush knobs. |
 | Amount | −100 to +100% | 0 | How far, shown in the destination's unit (like `+2.0 oct` or `−8.0 bits`). Negative flips the direction. |
 
 Hover over or drag any control to see its exact value in the readout at the top right.
@@ -113,12 +124,17 @@ Hover over or drag any control to see its exact value in the readout at the top 
 Each note gets its own voice, and every voice runs the same chain:
 
 ```
-osc 1 + osc 2 (blended by Mix) → bitcrusher → filter → amp envelope × velocity
+osc 1 + osc 2 (blended by Mix), × unison copies spread left/right
+  → bitcrusher → filter → amp envelope × velocity
 ```
 
-The voices are added together, scaled by Gain, then panned to the two output channels.
-Pan uses an equal-power law, so loudness stays even across the sweep: at centre each
-side is at −3 dB, and hard left or right puts the full level on that side only. All
+Each voice is stereo: everything after the oscillators runs once for the left side and
+once for the right. Without unison (or with Width at 0) both sides are identical.
+
+The voices are added together, scaled by Gain, then panned. Pan uses an equal-power
+law, so loudness stays even across the sweep: at centre each side is at −3 dB, and hard
+left or right puts the full level on that side only. With unison spreading the sound,
+Pan works as a balance between the two sides. All
 processing happens one sample at a time, so modulation is smooth with no stepping.
 
 ### The morphing oscillator
@@ -173,6 +189,36 @@ full on the next.
 The bitcrusher comes after the blend, and its Steps follow osc 1's pitch. With osc 2
 tuned to another interval, its stairs don't land evenly on its own cycle, which adds a
 little extra grit.
+
+### Unison
+
+Unison plays several copies of the oscillators (osc 1 and osc 2 together) for every
+note, each slightly detuned and placed at a different point between the speakers. As
+the copies drift in and out of phase, the sound gets wide and shimmering: with a saw
+and 5–7 voices, that's the classic "supersaw". One note still uses one voice, so you
+can play 8-note chords with unison on, and it works in Mono too.
+
+The copies are spaced evenly. The outer two sit at ±Detune and furthest left and right
+(as set by Width), and the rest fill in between. With an odd number of voices, one copy
+sits right on the note in the centre, which keeps the pitch solid even at wide detunes.
+Every copy is shifted the same way for osc 1 and osc 2, so osc 2's tuning against osc 1
+stays the same in each copy.
+
+The copies are added by power, so the level stays the same whatever the Voices count:
+more voices sound wider and thicker, not louder. Each copy starts each note at a random
+point in its cycle. If they all started together, every note would open with a
+"whoosh" as they spread apart.
+
+Some tips:
+
+- **Detune**: around 10–25 ct is lush; 40 ct and up gets sour and dramatic. Detune is
+  skewed, so the small values get more of the knob.
+- **Width** at 0% keeps the thickness but makes it mono, which helps a bass sit in the
+  middle of a mix.
+- **Mod Env → Detune**, negative, with Sustain at 0: each note starts wide and settles
+  tight.
+
+Changing Voices while a note is held can give a small tick, as copies come and go.
 
 ### The filter
 
@@ -259,6 +305,7 @@ Destinations, and what a slot's amount at 100% means for each:
 | Res | Res range | the whole 0–100% |
 | Pitch | semitones | 24 st (both oscillators) |
 | Pitch 2 | semitones | 36 st (osc 2 only) |
+| Detune | cents | 100 ct (the whole Detune range) |
 | Bits | bits | 15 bits (the whole 1–16) |
 | Steps | octaves | 7 oct (+1 oct doubles the steps, −7 takes 256 down to 2) |
 | Crush Mix | Crush Mix range | the whole 0–100% |
@@ -277,7 +324,8 @@ Some starting points:
 
 **Mod arcs.** A knob with a route to it shows a pink arc along its ring, covering every
 position the modulation can push it to, with a small tick marking where the knob itself
-is set. Pitch routes show on the Coarse knob, and Pitch 2 routes on Osc 2's Coarse.
+is set. Pitch routes show on the Coarse knob, Pitch 2 routes on Osc 2's Coarse, and
+Detune routes on the Unison Detune knob.
 
 ### Poly and Mono
 

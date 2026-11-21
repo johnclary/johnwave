@@ -16,6 +16,7 @@
 //! - Cutoff: octaves (+1 doubles the cutoff, −1 halves it)
 //! - Resonance: resonance units (1.0 = the whole 0–100% range)
 //! - Pitch (both oscillators), Osc 2 Pitch (osc 2 only): semitones
+//! - Detune (unison spread): cents
 //! - Bits (crusher bit depth): bits
 //! - Steps (crusher stairs per cycle): octaves (+1 doubles the steps, −1 halves them)
 //! - Mix (crusher blend): mix units (1.0 = the whole 0–100% range)
@@ -56,6 +57,7 @@ pub enum ModDest {
     Osc2Morph,
     Osc2Pitch,
     OscMix,
+    UnisonDetune,
     Cutoff,
     Resonance,
     Pitch,
@@ -73,6 +75,7 @@ impl ModDest {
             // The same reach as the Osc 2 Coarse knob.
             ModDest::Osc2Pitch => 36.0,
             ModDest::OscMix => 1.0,
+            ModDest::UnisonDetune => crate::unison::MAX_DETUNE_CT,
             ModDest::Cutoff => 6.0,
             ModDest::Resonance => 1.0,
             ModDest::Pitch => 24.0,
@@ -97,6 +100,7 @@ impl ModDest {
             ModDest::Cutoff | ModDest::CrushSteps => format!("{value:+.1} oct"),
             ModDest::Pitch | ModDest::Osc2Pitch => format!("{value:+.1} st"),
             ModDest::CrushBits => format!("{value:+.1} bits"),
+            ModDest::UnisonDetune => format!("{value:+.0} ct"),
         }
     }
 }
@@ -158,6 +162,8 @@ pub enum SlotDest {
     #[id = "pitch2"]
     #[name = "Pitch 2"]
     Pitch2,
+    #[id = "detune"]
+    Detune,
     #[id = "crush_bits"]
     #[name = "Bits"]
     CrushBits,
@@ -181,6 +187,7 @@ impl SlotDest {
             SlotDest::Resonance => Some(ModDest::Resonance),
             SlotDest::Pitch => Some(ModDest::Pitch),
             SlotDest::Pitch2 => Some(ModDest::Osc2Pitch),
+            SlotDest::Detune => Some(ModDest::UnisonDetune),
             SlotDest::CrushBits => Some(ModDest::CrushBits),
             SlotDest::CrushSteps => Some(ModDest::CrushSteps),
             SlotDest::CrushMix => Some(ModDest::CrushMix),
@@ -311,6 +318,7 @@ pub struct ModOffsets {
     pub osc2_morph: f32,
     pub osc2_pitch_st: f32,
     pub osc_mix: f32,
+    pub unison_detune_ct: f32,
     pub cutoff_oct: f32,
     pub resonance: f32,
     pub pitch_st: f32,
@@ -326,6 +334,7 @@ impl ModOffsets {
             ModDest::Osc2Morph => self.osc2_morph += value,
             ModDest::Osc2Pitch => self.osc2_pitch_st += value,
             ModDest::OscMix => self.osc_mix += value,
+            ModDest::UnisonDetune => self.unison_detune_ct += value,
             ModDest::Cutoff => self.cutoff_oct += value,
             ModDest::Resonance => self.resonance += value,
             ModDest::Pitch => self.pitch_st += value,
@@ -438,6 +447,7 @@ mod tests {
         assert_eq!(ModDest::Pitch.format_amount(0.5), "+12.0 st");
         assert_eq!(ModDest::Osc2Pitch.format_amount(-1.0), "-36.0 st");
         assert_eq!(ModDest::OscMix.format_amount(0.25), "+25%");
+        assert_eq!(ModDest::UnisonDetune.format_amount(0.5), "+50 ct");
     }
 
     #[test]

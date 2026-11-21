@@ -172,8 +172,8 @@ impl JohnwaveEditor {
             });
         });
 
-        // Row 1b: the second oscillator. Its own row for now, since row 1 is full; the
-        // layout rework will find it a proper home.
+        // Row 1b: the second oscillator and unison. Their own row for now, since row 1
+        // is full; the layout rework will find them a proper home.
         row(ui, |ui| {
             group(ui, |ui| {
                 // The knobs grey out while Osc 2 is switched off.
@@ -202,6 +202,23 @@ impl JohnwaveEditor {
                         ModDest::OscMix,
                         |offset| p.osc_mix.modulated_normalized_value() + offset,
                     )));
+                });
+            });
+            group(ui, |ui| {
+                knob_section(ui, "Unison", |ui| {
+                    ui.add(Knob::new(&p.unison_voices, &setter, "Voices"));
+                    // Detune and Width do nothing with a single voice.
+                    let spread = p.unison_voices.value() > 1;
+                    // Detune routes are in cents, on a skewed knob.
+                    ui.add_enabled(spread, Knob::new(&p.unison_detune, &setter, "Detune").mod_span(mod_span(
+                        &routes,
+                        ModDest::UnisonDetune,
+                        |offset| {
+                            p.unison_detune
+                                .preview_normalized(p.unison_detune.modulated_plain_value() + offset)
+                        },
+                    )));
+                    ui.add_enabled(spread, Knob::new(&p.unison_width, &setter, "Width"));
                 });
             });
         });

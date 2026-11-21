@@ -15,6 +15,7 @@ mod osc;
 mod readout;
 mod slider;
 mod trail;
+mod unison;
 mod voice;
 use env::AdsrSettings;
 use filter::FilterType;
@@ -91,6 +92,17 @@ pub struct SynthParams {
     /// The blend: 0 = only osc 1, 100% = only osc 2.
     #[id = "osc_mix"]
     pub osc_mix: FloatParam,
+
+    // Unison (see `unison.rs`). One voice, the default, is no unison.
+    /// How many copies of the oscillators each note plays.
+    #[id = "uni_voices"]
+    pub unison_voices: IntParam,
+    /// How far the outer copies are detuned, in cents.
+    #[id = "uni_detune"]
+    pub unison_detune: FloatParam,
+    /// How far the copies spread across the speakers.
+    #[id = "uni_width"]
+    pub unison_width: FloatParam,
 
     /// LFO speed in Hz.
     #[id = "lfo_rate"]
@@ -233,6 +245,31 @@ impl Default for SynthParams {
                 .with_unit(" ct")
                 .with_value_to_string(Arc::new(|ct| format!("{ct:+.0}"))),
             osc_mix: FloatParam::new("Osc Mix", 0.5, FloatRange::Linear { min: 0.0, max: 1.0 })
+                .with_smoother(SmoothingStyle::Linear(20.0))
+                .with_unit("%")
+                .with_value_to_string(formatters::v2s_f32_percentage(0))
+                .with_string_to_value(formatters::s2v_f32_percentage()),
+
+            unison_voices: IntParam::new(
+                "Unison Voices",
+                1,
+                IntRange::Linear { min: 1, max: unison::MAX_VOICES as i32 },
+            ),
+            // Skewed so the small detunes, where most of the sweet spots are, get more
+            // of the knob's travel.
+            unison_detune: FloatParam::new(
+                "Unison Detune",
+                25.0,
+                FloatRange::Skewed {
+                    min: 0.0,
+                    max: unison::MAX_DETUNE_CT,
+                    factor: FloatRange::skew_factor(-1.0),
+                },
+            )
+            .with_smoother(SmoothingStyle::Linear(20.0))
+            .with_unit(" ct")
+            .with_value_to_string(formatters::v2s_f32_rounded(0)),
+            unison_width: FloatParam::new("Unison Width", 0.5, FloatRange::Linear { min: 0.0, max: 1.0 })
                 .with_smoother(SmoothingStyle::Linear(20.0))
                 .with_unit("%")
                 .with_value_to_string(formatters::v2s_f32_percentage(0))
@@ -759,6 +796,7 @@ impl Plugin for Johnwave {
             // Read every knob once per sample, then share the values with all voices.
             let lfo_shape = self.params.lfo_shape.smoothed.next();
             let shared = self.free_lfo.next(lfo_rate, self.sample_rate, lfo_shape);
+            let unison_voices = self.params.unison_voices.value() as usize;
             let p = VoiceParams {
                 morph: self.params.morph.smoothed.next(),
                 osc2_amount: self.osc2_fade.next(),
@@ -766,6 +804,9 @@ impl Plugin for Johnwave {
                 osc2_pitch_st: self.params.osc2_coarse.value() as f32
                     + self.params.osc2_fine.smoothed.next() / 100.0,
                 osc_mix: self.params.osc_mix.smoothed.next(),
+                unison_voices,
+                unison_detune_ct: self.params.unison_detune.smoothed.next(),
+                unison_pan: unison::pans(unison_voices, self.params.unison_width.smoothed.next()),
                 lfo_rate,
                 lfo_shape,
                 shared_lfo: shared_lfo_on.then_some(shared),
@@ -787,11 +828,14 @@ impl Plugin for Johnwave {
                 mod_env: self.mod_env_settings(),
             };
 
-            let out = self.voices.next(&p, self.sample_rate) * self.params.gain.smoothed.next();
+            let (out_l, out_r) = self.voices.next(&p, self.sample_rate);
+            let gain = self.params.gain.smoothed.next();
+            // Pan works as a balance on the stereo voices. Without unison both sides are
+            // the same, so it's the same equal-power pan as ever.
             let (left, right) = pan_gains(self.params.pan.smoothed.next());
             // The layout is always stereo, so there are exactly two channels.
             for (channel, sample) in channel_samples.into_iter().enumerate() {
-                *sample = out * if channel == 0 { left } else { right };
+                *sample = if channel == 0 { out_l * gain * left } else { out_r * gain * right };
             }
         }
 
