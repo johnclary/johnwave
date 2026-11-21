@@ -19,7 +19,7 @@ use nice_plug_egui::{EguiEditorState, Frame, NiceEguiApp};
 use std::sync::Arc;
 
 /// Window size in points. On a Retina screen egui draws at twice this many pixels.
-pub const WIDTH: f64 = 640.0;
+pub const WIDTH: f64 = 760.0;
 pub const HEIGHT: f64 = 600.0;
 
 pub fn default_state() -> Arc<EguiEditorState> {
@@ -224,6 +224,8 @@ impl JohnwaveEditor {
                 knob_section(ui, "Mod Envelope", |ui| {
                     ui.add(Knob::new(&p.mod_env_attack, &setter, "A"));
                     ui.add(Knob::new(&p.mod_env_decay, &setter, "D"));
+                    ui.add(Knob::new(&p.mod_env_sustain, &setter, "S"));
+                    ui.add(Knob::new(&p.mod_env_release, &setter, "R"));
                 });
             });
             group(ui, |ui| {

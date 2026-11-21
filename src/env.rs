@@ -189,6 +189,35 @@ mod tests {
     }
 
     #[test]
+    fn release_takes_its_own_time_not_the_decay_time() {
+        // A short decay and a long release: the fade after letting go should follow
+        // the release time.
+        let s = AdsrSettings {
+            attack_s: 0.001,
+            decay_s: 0.05,
+            sustain: 0.6,
+            release_s: 1.0,
+        };
+        let mut env = Adsr::default();
+        env.trigger();
+        for _ in 0..(0.5 * SR) as usize {
+            env.next(&s, SR);
+        }
+        assert!((env.next(&s, SR) - 0.6).abs() < 0.01, "not holding at sustain");
+        env.release();
+        // Halfway through the release it's still well above silence...
+        for _ in 0..(0.5 * SR) as usize {
+            env.next(&s, SR);
+        }
+        assert!(env.next(&s, SR) > 0.03, "faded too fast");
+        // ...and by the end it's within about 1% of the sustain level.
+        for _ in 0..(0.5 * SR) as usize {
+            env.next(&s, SR);
+        }
+        assert!(env.next(&s, SR) < 0.6 * 0.011);
+    }
+
+    #[test]
     fn never_jumps_even_when_retriggered_mid_release() {
         // Any stage boundary or retrigger should move smoothly, never in a step.
         // The fastest legal movement is the attack slope.

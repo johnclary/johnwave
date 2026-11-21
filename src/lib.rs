@@ -117,11 +117,16 @@ pub struct SynthParams {
     #[id = "crush_mix"]
     pub crush_mix: FloatParam,
 
-    // The Mod Env is an attack/decay envelope. What it moves is set in the mod matrix.
+    // The Mod Env is a second ADSR. What it moves is set in the mod matrix.
     #[id = "menv_att"]
     pub mod_env_attack: FloatParam,
     #[id = "menv_dec"]
     pub mod_env_decay: FloatParam,
+    /// Level held while the key is down. 0 (the default) makes it an attack/decay envelope.
+    #[id = "menv_sus"]
+    pub mod_env_sustain: FloatParam,
+    #[id = "menv_rel"]
+    pub mod_env_release: FloatParam,
 
     #[id = "attack"]
     pub attack: FloatParam,
@@ -270,6 +275,15 @@ impl Default for SynthParams {
 
             mod_env_attack: time_param("Mod Env Attack", 1.0, 5_000.0),
             mod_env_decay: time_param("Mod Env Decay", 500.0, 10_000.0),
+            mod_env_sustain: FloatParam::new(
+                "Mod Env Sustain",
+                0.0,
+                FloatRange::Linear { min: 0.0, max: 1.0 },
+            )
+            .with_unit("%")
+            .with_value_to_string(formatters::v2s_f32_percentage(0))
+            .with_string_to_value(formatters::s2v_f32_percentage()),
+            mod_env_release: time_param("Mod Env Release", 500.0, 10_000.0),
 
             attack: time_param("Attack", 5.0, 5_000.0),
             decay: time_param("Decay", 300.0, 5_000.0),
@@ -402,6 +416,18 @@ fn migrate_fixed_knobs(params: &mut BTreeMap<String, ParamValue>) {
         params.insert(format!("mod_dst_{slot}"), ParamValue::String(enum_id(dest).into()));
         params.insert(format!("mod_amt_{slot}"), ParamValue::F32(value / scale));
         slot += 1;
+    }
+}
+
+/// The Mod Env used to have no Release knob: its release time was its decay time.
+/// Patches from before then get Release = Decay, so they sound the same. (Their Sustain
+/// gets the default of 0, which is what it used to be.)
+fn migrate_mod_env_release(params: &mut BTreeMap<String, ParamValue>) {
+    if params.contains_key("menv_rel") {
+        return;
+    }
+    if let Some(&ParamValue::F32(decay)) = params.get("menv_dec") {
+        params.insert("menv_rel".into(), ParamValue::F32(decay));
     }
 }
 
@@ -552,15 +578,12 @@ impl Johnwave {
         }
     }
 
-    /// Attack, then decay to 0 and stay there. Releasing the key mid-decay carries on at
-    /// the same speed, because the release time is set equal to the decay time.
     fn mod_env_settings(&self) -> AdsrSettings {
-        let decay_s = self.params.mod_env_decay.value() / 1000.0;
         AdsrSettings {
             attack_s: self.params.mod_env_attack.value() / 1000.0,
-            decay_s,
-            sustain: 0.0,
-            release_s: decay_s,
+            decay_s: self.params.mod_env_decay.value() / 1000.0,
+            sustain: self.params.mod_env_sustain.value(),
+            release_s: self.params.mod_env_release.value() / 1000.0,
         }
     }
 }
@@ -593,6 +616,7 @@ impl Plugin for Johnwave {
     /// Runs on every saved patch just before it loads, so old patches can be updated.
     fn filter_state(state: &mut PluginState) {
         migrate_fixed_knobs(&mut state.params);
+        migrate_mod_env_release(&mut state.params);
     }
 
     /// The DAW asks for the window when you open the plugin.
@@ -841,6 +865,18 @@ mod tests {
         assert_eq!(text(&params, "mod_src_1"), "vel");
         assert_eq!(number(&params, "mod_amt_1"), 0.3);
         assert!(!params.contains_key("mod_dst_1"));
+    }
+
+    #[test]
+    fn old_mod_env_release_follows_decay() {
+        let mut params = old_patch(&[("menv_dec", 3950.0)]);
+        migrate_mod_env_release(&mut params);
+        assert_eq!(number(&params, "menv_rel"), 3950.0);
+
+        // A patch that already has a release keeps it.
+        let mut params = old_patch(&[("menv_dec", 3950.0), ("menv_rel", 80.0)]);
+        migrate_mod_env_release(&mut params);
+        assert_eq!(number(&params, "menv_rel"), 80.0);
     }
 
     #[test]
