@@ -51,7 +51,9 @@ Grouped as they appear in the window, top to bottom.
 | Param | Range | Default | What it does |
 |---|---|---|---|
 | A (Attack) | 1 ms – 5 s | 1 ms | Time to rise to its peak. |
-| D (Decay) | 1 ms – 10 s | 500 ms | Time to fall back to zero. |
+| D (Decay) | 1 ms – 10 s | 500 ms | Time to fall to the sustain level. |
+| S (Sustain) | 0–100% | 0% | Level held while the key is down. At 0% it's a one-shot attack/decay. |
+| R (Release) | 1 ms – 10 s | 500 ms | Time to fall back to zero after the key is released. |
 
 What it moves is set in the [Mod Matrix](#mod-matrix).
 
@@ -183,9 +185,13 @@ they're good to sweep with modulation.
   played the note (velocity). Attack rises from wherever the level currently is, so
   retriggering a note never clicks. Decay and release fall exponentially, and their
   times mean roughly how long it takes to get 99% of the way.
-- **Mod envelope (AD)** rises to a peak and falls back to zero, whether or not the key
-  is still held. It's for one-shot movement at the start of a note, such as a filter
-  "pluck" or a bright attack that settles into a sine.
+- **Mod envelope (ADSR)** works like the amp envelope, but it moves whatever you route
+  it to in the mod matrix instead of the volume. With Sustain at 0 (the default) it rises
+  to a peak and falls back to zero while the key is still held. That's for one-shot
+  movement at the start of a note, such as a filter "pluck" or a bright attack that
+  settles into a sine. Turn Sustain up to hold the movement for as long as the key is
+  down. Release then sets how long it takes to return to zero after you let go.
+
 
 ### Modulation
 
@@ -196,7 +202,7 @@ up, and the result is kept within the destination's range.
 Sources:
 
 - **LFO**: swings both ways, −1 to +1.
-- **Mod Env**: 0 to 1, rising and falling once per note.
+- **Mod Env**: 0 to 1, following the mod envelope's shape over each note.
 - **Velocity**: 0 to 1, how hard the note was played. Fixed for the length of the note.
 - **Random**: the LFO's sample & hold, −1 to +1. A new random level each LFO cycle,
   following the LFO's Rate and SYNC. Each note gets its own levels while RETRIG is on.
