@@ -150,7 +150,12 @@ impl JohnwaveEditor {
                 });
             });
             group(ui, |ui| {
-                knob_section(ui, "Tuning", |ui| {
+                // LEGATO only matters while Porta is on, so it greys out at Off.
+                let porta_on = p.porta.value() > 0.0;
+                section_heading(ui, "Tuning", |ui| {
+                    ui.add_enabled_ui(porta_on, |ui| toggle_button(ui, "LEGATO", &p.porta_legato, &setter));
+                });
+                knob_row(ui, |ui| {
                     // Pitch routes show here, since Coarse is in semitones too. Its range is
                     // 48 semitones (−24..+24), so one semitone is 1/48 of the way round.
                     ui.add(Knob::new(&p.coarse, &setter, "Coarse").bipolar().mod_span(mod_span(
@@ -160,6 +165,7 @@ impl JohnwaveEditor {
                     )));
                     ui.add(Knob::new(&p.fine, &setter, "Fine").bipolar());
                     ui.add(Knob::new(&p.bend_range, &setter, "Bend"));
+                    ui.add(Knob::new(&p.porta, &setter, "Porta"));
                 });
             });
             // The screen sits at the right edge, under the readout, as wide as it. It's

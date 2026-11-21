@@ -23,7 +23,7 @@ use lfo::{Lfo, SyncDivision};
 use modulation::{enum_id, ModSlotParams, Routes, SlotDest, SlotSource, MATRIX_SLOTS};
 use nice_plug::plugin::ParamValue;
 use notes::NoteStack;
-use voice::{VoiceParams, VoicePool};
+use voice::{Porta, VoiceParams, VoicePool};
 use editor::JohnwaveEditor;
 use nice_plug_egui::{EguiEditor, EguiEditorState, EguiNiceSettings, RepaintNotifier};
 
@@ -180,6 +180,13 @@ pub struct SynthParams {
     /// Fine tune in cents (100 cents = 1 semitone).
     #[id = "fine"]
     pub fine: FloatParam,
+    /// Portamento: how long each new note takes to slide in from the last, in ms.
+    /// 0 = off.
+    #[id = "porta"]
+    pub porta: FloatParam,
+    /// Only slide when the new key is pressed while another is still held.
+    #[id = "porta_legato"]
+    pub porta_legato: BoolParam,
 
     /// The mod matrix: each slot routes one source to one destination.
     /// `nested(array)` saves slot 1 as `mod_src_1`, `mod_dst_1`, `mod_amt_1`, and so on.
@@ -199,22 +206,45 @@ fn time_param(name: &str, default_ms: f32, max_ms: f32) -> FloatParam {
             factor: FloatRange::skew_factor(-2.0),
         },
     )
-    .with_value_to_string(Arc::new(|ms| {
-        if ms < 1000.0 {
-            format!("{ms:.0} ms")
-        } else {
-            format!("{:.2} s", ms / 1000.0)
-        }
-    }))
+    .with_value_to_string(Arc::new(ms_text))
+    .with_string_to_value(Arc::new(ms_from_text))
+}
+
+/// A time in milliseconds as text: "250 ms", or "1.50 s" from a second up.
+fn ms_text(ms: f32) -> String {
+    if ms < 1000.0 {
+        format!("{ms:.0} ms")
+    } else {
+        format!("{:.2} s", ms / 1000.0)
+    }
+}
+
+/// Read a typed time: "250 ms", "1.5 s", or a plain number of milliseconds.
+fn ms_from_text(text: &str) -> Option<f32> {
+    let s = text.trim().to_lowercase();
+    if let Some(n) = s.strip_suffix("ms") {
+        n.trim().parse().ok()
+    } else if let Some(n) = s.strip_suffix('s') {
+        n.trim().parse::<f32>().ok().map(|secs| secs * 1000.0)
+    } else {
+        s.parse().ok()
+    }
+}
+
+/// The Porta knob: 0–2 s, skewed like the envelope times, with 0 shown as Off.
+fn porta_param() -> FloatParam {
+    FloatParam::new(
+        "Porta",
+        0.0,
+        FloatRange::Skewed {
+            min: 0.0,
+            max: 2_000.0,
+            factor: FloatRange::skew_factor(-2.0),
+        },
+    )
+    .with_value_to_string(Arc::new(|ms| if ms < 0.5 { "Off".into() } else { ms_text(ms) }))
     .with_string_to_value(Arc::new(|s| {
-        let s = s.trim().to_lowercase();
-        if let Some(n) = s.strip_suffix("ms") {
-            n.trim().parse().ok()
-        } else if let Some(n) = s.strip_suffix('s') {
-            n.trim().parse::<f32>().ok().map(|secs| secs * 1000.0)
-        } else {
-            s.parse().ok()
-        }
+        if s.trim().eq_ignore_ascii_case("off") { Some(0.0) } else { ms_from_text(s) }
     }))
 }
 
@@ -388,6 +418,8 @@ impl Default for SynthParams {
                 .with_smoother(SmoothingStyle::Linear(20.0))
                 .with_unit(" ct")
                 .with_value_to_string(Arc::new(|ct| format!("{ct:+.0}"))),
+            porta: porta_param(),
+            porta_legato: BoolParam::new("Porta Legato", false),
 
             // `from_fn` builds the array by calling this once per slot (i = 0, 1, ...).
             mod_slots: std::array::from_fn(|i| ModSlotParams::new(i + 1)),
@@ -572,21 +604,23 @@ impl Default for Johnwave {
 
 impl Johnwave {
     fn handle_event(&mut self, event: NoteEvent<()>) {
+        let porta = Porta {
+            seconds: self.params.porta.value() / 1000.0,
+            legato_only: self.params.porta_legato.value(),
+        };
         match event {
             NoteEvent::NoteOn { key, velocity, .. } => {
                 let note = key.number_or_middle_c();
                 match self.mode {
-                    VoiceMode::Poly => self.voices.note_on(note, velocity, self.sample_rate),
+                    VoiceMode::Poly => self.voices.note_on(note, velocity, self.sample_rate, porta),
                     VoiceMode::Mono => {
                         let legato = self.notes.top().is_some();
                         self.notes.push(note);
                         // Another key still held: change pitch only. Fresh press: retrigger.
                         if legato {
-                            self.voices.mono().glide_to(note);
+                            self.voices.mono_glide(note, self.sample_rate, porta);
                         } else {
-                            self.voices
-                                .mono()
-                                .start(note, velocity, 0, self.sample_rate);
+                            self.voices.mono_start(note, velocity, self.sample_rate, porta);
                         }
                     }
                 }
@@ -598,8 +632,9 @@ impl Johnwave {
                     VoiceMode::Mono => {
                         self.notes.remove(note);
                         match self.notes.top() {
-                            // Fall back to the previously held key without retriggering.
-                            Some(prev) => self.voices.mono().glide_to(prev),
+                            // Fall back to the previously held key without retriggering
+                            // (gliding back, with Porta on).
+                            Some(prev) => self.voices.mono_glide(prev, self.sample_rate, porta),
                             None => self.voices.mono().release(),
                         }
                     }

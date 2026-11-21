@@ -49,6 +49,10 @@ See [Unison](#unison-1).
 | Coarse | −24 to +24 st | 0 | Transpose in semitones. Moves both oscillators. |
 | Fine | −100 to +100 ct | 0 | Fine tune in cents (100 cents = 1 semitone). Moves both oscillators. |
 | Bend | 0–24 st | 2 | How far the pitch bend wheel reaches, each way. |
+| Porta | Off – 2 s | Off | Portamento: how long each new note takes to slide in from the last one, whatever the interval. |
+| LEGATO | on / off | off | On: only slide when the new key is pressed while another is still held. Off: every note slides. Greyed out while Porta is Off. |
+
+See [Porta](#porta).
 
 ### Filter
 
@@ -333,8 +337,26 @@ Detune routes on the Unison Detune knob.
   that's already fading out, and failing that the oldest held one. Replaying a key that
   is still sounding reuses its voice instead of doubling it.
 - **Mono (legato):** one voice. Playing a new key while another is held changes the
-  pitch without restarting the envelopes. Releasing it falls back to the key still held.
+  pitch without restarting the envelopes (sliding there with Porta on). Releasing it
+  falls back to the key still held.
   Switching modes releases any notes that are playing.
+
+### Porta
+
+Porta (portamento) makes the pitch slide from one note to the next instead of
+jumping. The slide is a straight line in semitones, so it sounds even all the way, and
+it always takes the Porta time: a semitone and two octaves both arrive on time. Osc 2,
+the unison copies and the crusher's Steps all slide along.
+
+- **Mono:** the note slides from wherever the pitch is right now. Change key mid-slide
+  and it turns around from that point. Letting go of a key and falling back to one
+  still held slides back too. With LEGATO on, only overlapping notes slide and a
+  detached note starts on its own pitch: the classic lead setup, where you choose
+  per note whether it glides by how you play.
+- **Poly:** each new note slides in from the last note played, so chords swoop in.
+  With LEGATO on, only notes pressed while other keys are held slide.
+
+The very first note never slides, since there's nothing to slide from.
 
 ### LFO sync and retrigger
 

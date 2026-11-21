@@ -21,6 +21,43 @@ use std::f32::consts::FRAC_PI_2;
 
 pub const NUM_VOICES: usize = 8;
 
+/// The Porta (portamento) settings: how a new note slides in from the last one.
+#[derive(Clone, Copy, Debug)]
+pub struct Porta {
+    /// How long every glide takes, whatever the interval. 0 = no glide.
+    pub seconds: f32,
+    /// Only glide when the new key is pressed while another is still held.
+    pub legato_only: bool,
+}
+
+impl Porta {
+    #[cfg(test)]
+    pub const OFF: Porta = Porta { seconds: 0.0, legato_only: false };
+
+    /// The glide for a new note, if it should have one. `from` is the pitch to slide
+    /// from (`None` before the very first note), `legato` whether another key is held.
+    pub fn glide(self, from: Option<f32>, legato: bool) -> Option<Glide> {
+        let from = from?;
+        (self.seconds > 0.0 && (legato || !self.legato_only)).then_some(Glide {
+            from,
+            seconds: self.seconds,
+        })
+    }
+}
+
+/// A slide from one pitch to a new note.
+#[derive(Clone, Copy, Debug)]
+pub struct Glide {
+    /// Where to start, in MIDI semitones (60 = middle C, fractions allowed).
+    pub from: f32,
+    pub seconds: f32,
+}
+
+/// A pitch in MIDI semitones (with fractions) as a frequency in Hz.
+fn pitch_to_freq(pitch: f32) -> f32 {
+    440.0 * ((pitch - 69.0) / 12.0).exp2()
+}
+
 /// Knob values for the current sample, shared by every voice.
 pub struct VoiceParams {
     pub morph: f32,
@@ -69,7 +106,14 @@ pub struct Voice {
     held: bool,
     /// When this voice was started. Higher means newer. Used to pick a voice to steal.
     age: u64,
+    /// The pitch being played, in MIDI semitones. Equal to `note` except mid-glide.
+    pitch: f32,
+    /// `pitch` as a frequency in Hz.
     freq: f32,
+    /// How far `pitch` moves each sample while gliding.
+    glide_step: f32,
+    /// Samples left in the current glide (0 = not gliding).
+    glide_left: u32,
     velocity: Smoother<f32>,
     /// Osc 1 and osc 2 of each unison copy. Only the first `unison_voices` run.
     osc1: [MorphOsc; MAX_COPIES],
@@ -95,7 +139,10 @@ impl Default for Voice {
             note: 0,
             held: false,
             age: 0,
+            pitch: 69.0,
             freq: 440.0,
+            glide_step: 0.0,
+            glide_left: 0,
             velocity: Smoother::new(SmoothingStyle::Linear(5.0)),
             osc1: Default::default(),
             osc2: Default::default(),
@@ -117,8 +164,9 @@ impl Voice {
         !self.amp_env.is_idle()
     }
 
-    /// Begin a note. The voice's own LFO restarts (used when LFO Retrigger is on).
-    pub fn start(&mut self, note: u8, velocity: f32, age: u64, sample_rate: f32) {
+    /// Begin a note, sliding in if `glide` says so. The voice's own LFO restarts (used
+    /// when LFO Retrigger is on).
+    pub fn start(&mut self, note: u8, velocity: f32, age: u64, sample_rate: f32, glide: Option<Glide>) {
         // A silent voice starts with an empty filter and crusher. A voice that's still
         // sounding keeps their memory, so the takeover doesn't click.
         if !self.is_active() {
@@ -139,7 +187,7 @@ impl Voice {
                 self.osc2[i].set_phase(phase);
             }
         }
-        self.glide_to(note);
+        self.glide_to(note, glide, sample_rate);
         self.held = true;
         self.age = age;
         self.velocity.set_target(sample_rate, velocity);
@@ -167,10 +215,49 @@ impl Voice {
         (x >> 8) as f32 / (1u32 << 24) as f32
     }
 
-    /// Change pitch without retriggering anything (mono legato).
-    pub fn glide_to(&mut self, note: u8) {
+    /// Change pitch without retriggering anything (mono legato): slide there with a
+    /// `glide`, or jump straight there without one.
+    ///
+    /// The slide is a straight line in semitones, so it sounds even all the way. It's
+    /// counted in samples, so it lands exactly on the note at the end.
+    pub fn glide_to(&mut self, note: u8, glide: Option<Glide>, sample_rate: f32) {
         self.note = note;
-        self.freq = util::midi_key_to_freq(note);
+        match glide {
+            Some(g) => {
+                let samples = (g.seconds * sample_rate).round().max(1.0);
+                self.pitch = g.from;
+                self.freq = pitch_to_freq(g.from);
+                self.glide_step = (note as f32 - g.from) / samples;
+                self.glide_left = samples as u32;
+            }
+            None => {
+                self.pitch = note as f32;
+                self.freq = util::midi_key_to_freq(note);
+                self.glide_left = 0;
+            }
+        }
+    }
+
+    /// The pitch being played right now, in MIDI semitones (mid-glide, somewhere
+    /// between two notes).
+    pub fn pitch(&self) -> f32 {
+        self.pitch
+    }
+
+    /// Move one sample further along the glide, if there is one.
+    fn advance_glide(&mut self) {
+        if self.glide_left == 0 {
+            return;
+        }
+        self.glide_left -= 1;
+        if self.glide_left == 0 {
+            // Land exactly on the note, with no rounding left over.
+            self.pitch = self.note as f32;
+            self.freq = util::midi_key_to_freq(self.note);
+        } else {
+            self.pitch += self.glide_step;
+            self.freq = pitch_to_freq(self.pitch);
+        }
     }
 
     pub fn release(&mut self) {
@@ -209,6 +296,7 @@ impl Voice {
 
         // 2. Run them through the routes to get how far each setting is pushed.
         let off = modulation::apply(&p.routes, &sources);
+        self.advance_glide();
 
         // 3. Knob value + offset. Pitch and cutoff work in semitones and octaves, then
         // turn into a frequency multiplier: +12 st or +1 oct doubles, −1 oct halves.
@@ -291,14 +379,38 @@ pub struct VoicePool {
     voices: [Voice; NUM_VOICES],
     /// Counts note starts, so each voice's `age` says how recent it is.
     started: u64,
+    /// The last note played (`None` before the first), for Porta to glide from.
+    last_note: Option<u8>,
 }
 
 impl VoicePool {
-    /// Play a note on a free voice, taking one over if all 8 are busy.
-    pub fn note_on(&mut self, note: u8, velocity: f32, sample_rate: f32) {
+    /// Play a note on a free voice, taking one over if all 8 are busy. With Porta on,
+    /// it slides in from the last note played.
+    pub fn note_on(&mut self, note: u8, velocity: f32, sample_rate: f32, porta: Porta) {
         self.started += 1;
+        // Legato: another key is still down as this one goes down.
+        let legato = self.voices.iter().any(|v| v.held);
+        let glide = porta.glide(self.last_note.map(f32::from), legato);
         let i = self.pick_voice(note);
-        self.voices[i].start(note, velocity, self.started, sample_rate);
+        self.voices[i].start(note, velocity, self.started, sample_rate, glide);
+        self.last_note = Some(note);
+    }
+
+    /// Mono: a fresh key press (no other key held) on the single voice. With Porta on
+    /// and Legato off, it slides from wherever the voice's pitch is now.
+    pub fn mono_start(&mut self, note: u8, velocity: f32, sample_rate: f32, porta: Porta) {
+        let from = self.last_note.map(|_| self.voices[0].pitch());
+        let glide = porta.glide(from, false);
+        self.voices[0].start(note, velocity, 0, sample_rate, glide);
+        self.last_note = Some(note);
+    }
+
+    /// Mono: move the single voice to `note` while a key is held, without
+    /// retriggering. With Porta on it slides from wherever its pitch is now.
+    pub fn mono_glide(&mut self, note: u8, sample_rate: f32, porta: Porta) {
+        let glide = porta.glide(Some(self.voices[0].pitch()), true);
+        self.voices[0].glide_to(note, glide, sample_rate);
+        self.last_note = Some(note);
     }
 
     /// Which voice should play `note`, in order of preference:
@@ -335,6 +447,7 @@ impl VoicePool {
     /// Silence immediately (host reset, or a "choke" from the DAW).
     pub fn reset(&mut self) {
         self.voices.iter_mut().for_each(Voice::reset);
+        self.last_note = None;
     }
 
     /// The modulated Morph and the level of the most recently started voice that's still
@@ -407,7 +520,7 @@ mod tests {
     };
 
     fn on(pool: &mut VoicePool, note: u8) {
-        pool.note_on(note, 1.0, SR);
+        pool.note_on(note, 1.0, SR, Porta::OFF);
     }
 
     fn run(pool: &mut VoicePool, seconds: f32) -> Vec<f32> {
@@ -436,7 +549,7 @@ mod tests {
     /// high-frequency content.
     fn brightness(p: &VoiceParams) -> f32 {
         let mut v = Voice::default();
-        v.start(45, 1.0, 1, SR);
+        v.start(45, 1.0, 1, SR, None);
         let out: Vec<f32> = (0..(0.3 * SR) as usize).map(|_| v.next(p, SR).0).collect();
         let diffs: Vec<f32> = out.windows(2).map(|w| w[1] - w[0]).collect();
         (diffs.iter().map(|d| d * d).sum::<f32>() / diffs.len() as f32).sqrt()
@@ -467,7 +580,7 @@ mod tests {
     /// over one second.
     fn measured_freq(p: &VoiceParams) -> f32 {
         let mut v = Voice::default();
-        v.start(57, 1.0, 1, SR);
+        v.start(57, 1.0, 1, SR, None);
         let out: Vec<f32> = (0..SR as usize).map(|_| v.next(p, SR).0).collect();
         out.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count() as f32
     }
@@ -563,7 +676,7 @@ mod tests {
 
     fn render(p: &VoiceParams) -> Vec<f32> {
         let mut v = Voice::default();
-        v.start(57, 1.0, 1, SR);
+        v.start(57, 1.0, 1, SR, None);
         (0..(0.1 * SR) as usize).map(|_| v.next(p, SR).0).collect()
     }
 
@@ -671,7 +784,7 @@ mod tests {
         let mut v = Voice::default();
         let mut phases = Vec::new();
         for _ in 0..4 {
-            v.start(60, 1.0, 0, SR);
+            v.start(60, 1.0, 0, SR, None);
             phases.push(v.osc2[0].phase());
             v.reset();
         }
@@ -698,7 +811,7 @@ mod tests {
         let rms_at = |mix: f32| {
             let p = VoiceParams { osc2_pitch_st: 1.0, osc_mix: mix, ..OSC2_ONLY };
             let mut v = Voice::default();
-            v.start(57, 1.0, 1, SR);
+            v.start(57, 1.0, 1, SR, None);
             let out: Vec<f32> = (0..(1.5 * SR) as usize).map(|_| v.next(&p, SR).0).collect();
             let tail = &out[(0.5 * SR) as usize..];
             (tail.iter().map(|x| x * x).sum::<f32>() / tail.len() as f32).sqrt()
@@ -713,7 +826,7 @@ mod tests {
     /// Both sides of a voice playing A3, for `seconds`.
     fn render_stereo(p: &VoiceParams, seconds: f32) -> (Vec<f32>, Vec<f32>) {
         let mut v = Voice::default();
-        v.start(57, 1.0, 1, SR);
+        v.start(57, 1.0, 1, SR, None);
         (0..(seconds * SR) as usize).map(|_| v.next(p, SR)).unzip()
     }
 
@@ -774,5 +887,81 @@ mod tests {
         for (a, b) in knob.0.iter().zip(&routed.0) {
             assert!((a - b).abs() < 1e-4, "{a} vs {b}");
         }
+    }
+
+    const GLIDE: Porta = Porta { seconds: 0.1, legato_only: false };
+
+    /// The pitch of the voice playing `note`.
+    fn pitch_of(pool: &VoicePool, note: u8) -> f32 {
+        pool.voices.iter().find(|v| v.held && v.note == note).unwrap().pitch()
+    }
+
+    #[test]
+    fn glide_slides_evenly_and_lands_on_time() {
+        let mut v = Voice::default();
+        v.start(57, 1.0, 1, SR, None);
+        v.glide_to(69, Some(Glide { from: 57.0, seconds: 0.1 }), SR);
+        let step = |v: &mut Voice, seconds: f32| {
+            for _ in 0..(seconds * SR) as usize {
+                v.next(&PARAMS, SR);
+            }
+        };
+        step(&mut v, 0.05);
+        assert!((v.pitch() - 63.0).abs() < 0.01, "halfway at {}", v.pitch());
+        step(&mut v, 0.05);
+        assert_eq!(v.pitch(), 69.0);
+        assert_eq!(v.freq, util::midi_key_to_freq(69));
+        // Glides take the same time whatever the interval.
+        v.glide_to(45, Some(Glide { from: 69.0, seconds: 0.1 }), SR);
+        step(&mut v, 0.05);
+        assert!((v.pitch() - 57.0).abs() < 0.01, "halfway at {}", v.pitch());
+    }
+
+    #[test]
+    fn porta_off_and_the_first_note_jump_straight_there() {
+        assert!(Porta::OFF.glide(Some(60.0), true).is_none());
+        assert!(GLIDE.glide(None, true).is_none());
+        let mut pool = VoicePool::default();
+        pool.note_on(60, 1.0, SR, GLIDE); // first note: nothing to glide from
+        assert_eq!(pitch_of(&pool, 60), 60.0);
+        pool.note_on(64, 1.0, SR, Porta::OFF);
+        assert_eq!(pitch_of(&pool, 64), 64.0);
+    }
+
+    #[test]
+    fn poly_notes_glide_from_the_last_note_played() {
+        let mut pool = VoicePool::default();
+        pool.note_on(60, 1.0, SR, GLIDE);
+        pool.note_off(60);
+        pool.note_on(72, 1.0, SR, GLIDE); // detached, but Legato is off
+        assert_eq!(pitch_of(&pool, 72), 60.0);
+    }
+
+    #[test]
+    fn legato_porta_only_glides_while_a_key_is_held() {
+        let legato = Porta { legato_only: true, ..GLIDE };
+        let mut pool = VoicePool::default();
+        pool.note_on(60, 1.0, SR, legato);
+        pool.note_off(60);
+        pool.note_on(72, 1.0, SR, legato); // detached: jumps
+        assert_eq!(pitch_of(&pool, 72), 72.0);
+        pool.note_on(76, 1.0, SR, legato); // 72 still held: glides
+        assert_eq!(pitch_of(&pool, 76), 72.0);
+    }
+
+    #[test]
+    fn mono_glides_from_where_the_pitch_is_now() {
+        let mut pool = VoicePool::default();
+        pool.mono_start(60, 1.0, SR, GLIDE);
+        assert_eq!(pool.voices[0].pitch(), 60.0);
+        pool.mono_glide(72, SR, GLIDE);
+        // Halfway there, change course: the new glide starts from 66, not 72.
+        for _ in 0..(0.05 * SR) as usize {
+            pool.next(&PARAMS, SR);
+        }
+        let now = pool.voices[0].pitch();
+        assert!((now - 66.0).abs() < 0.01, "at {now}");
+        pool.mono_glide(60, SR, GLIDE);
+        assert_eq!(pool.voices[0].pitch(), now);
     }
 }
