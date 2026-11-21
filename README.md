@@ -48,6 +48,5 @@ folder at `target/bundled` and just rebuild + rescan.
 ## Todo
 
 - ability to type in param values (with left click?)
-- more mod targets: resonance, tune, pan, gain?
 - a second filter
 - small line in center of polar knobs
