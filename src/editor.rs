@@ -149,7 +149,8 @@ impl JohnwaveEditor {
         });
 
         // Which chip is armed. The chips are in the middle column, so the left column's
-        // knobs see a click on a chip one frame late, which is too quick to notice.
+        // knobs are already drawn by the time a chip click lands. The end of this
+        // function asks for one more frame when that happens, so they catch up.
         let armed = armed_source(ui).map(|source| Armed {
             source,
             value: self.live_sources.get(source),
@@ -382,6 +383,13 @@ impl JohnwaveEditor {
         });
 
         crate::readout::draw(ui, readout_rect);
+
+        // A chip click or Esc changed the armed source partway through this frame, so
+        // the knobs drawn before the chips still show the old one. Ask for another frame
+        // to redraw them; without this they'd wait for the mouse to move.
+        if armed_source(ui) != armed.map(|a| a.source) {
+            self.repaint.request_repaint();
+        }
     }
 }
 
