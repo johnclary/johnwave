@@ -92,6 +92,8 @@ const LABEL_GAP: f32 = 7.0;
 /// How bright the pink is (0..1 of the full mod pink) on a mod target whose section is
 /// switched off, in mod mode. Dim enough to read as off, bright enough to see it's usable.
 const OFF_TARGET_STRENGTH: f32 = 0.55;
+/// Room between a mod target's name and its outline in mod mode (x, y).
+const LABEL_OUTLINE_PAD: egui::Vec2 = egui::vec2(4.0, 1.0);
 
 /// A knob for one parameter. The `'a` says it borrows the parameter and setter, which only
 /// has to last for this one frame (egui rebuilds the knob every frame).
@@ -453,13 +455,23 @@ impl<P: Param> egui::Widget for Knob<'_, P> {
             } else {
                 visuals.text_color()
             };
-            painter.text(
+            let label_rect = painter.text(
                 egui::pos2(center.x, center.y + style.arc_bottom() + LABEL_GAP),
                 egui::Align2::CENTER_TOP,
                 self.label,
                 egui::FontId::proportional(style.label_text_size),
                 label_color,
             );
+            // In mod mode, every target gets a thin pink outline round its name, like an
+            // unpressed chip, so you can see at a glance where the armed source can go.
+            if armed.is_some() && !inert && ui.is_enabled() {
+                painter.rect_stroke(
+                    label_rect.expand2(LABEL_OUTLINE_PAD),
+                    3.0,
+                    egui::Stroke::new(1.0, mod_color.gamma_multiply(0.6)),
+                    egui::StrokeKind::Outside,
+                );
+            }
         }
 
         crate::readout::report(ui, self.param, &response);
