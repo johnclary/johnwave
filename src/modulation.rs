@@ -25,6 +25,7 @@
 //! means cleaner, so a negative amount is what adds crush.
 
 use nice_plug::prelude::*;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 /// Things that can modulate. Values are −1..=1 (bipolar) or 0..=1 (unipolar).
@@ -413,6 +414,54 @@ pub fn mod_span(routes: &Routes, dest: ModDest, only: Option<ModSource>) -> Opti
     span
 }
 
+/// Where `source`'s routes to `dest` push it right now, when the source is at `value`:
+/// the sum of `value × amount` over those routes, or `None` if `source` doesn't reach
+/// `dest`. Mod mode draws this as the live tick on the arc.
+pub fn mod_offset(routes: &Routes, dest: ModDest, source: ModSource, value: f32) -> Option<f32> {
+    routes
+        .iter()
+        .filter(|r| r.dest == dest && r.source == source)
+        .map(|r| value * r.amount)
+        .reduce(|a, b| a + b)
+}
+
+/// The newest voice's source values, passed from the audio thread to the window for
+/// the live tick. One atomic number per source (like the screen's Morph), NaN while
+/// nothing is playing.
+pub struct LiveSources([AtomicF32; 4]);
+
+impl Default for LiveSources {
+    fn default() -> Self {
+        // `std::array::from_fn` builds the array by calling the closure once per slot.
+        Self(std::array::from_fn(|_| AtomicF32::new(f32::NAN)))
+    }
+}
+
+impl LiveSources {
+    fn index(source: ModSource) -> usize {
+        match source {
+            ModSource::Lfo => 0,
+            ModSource::ModEnv => 1,
+            ModSource::Velocity => 2,
+            ModSource::Random => 3,
+        }
+    }
+
+    /// Called by the audio thread: the newest voice's values, or `None` when silent.
+    pub fn store(&self, sources: Option<ModSources>) {
+        for source in ModSource::ALL {
+            let value = sources.map_or(f32::NAN, |s| s.get(source));
+            self.0[Self::index(source)].store(value, Ordering::Relaxed);
+        }
+    }
+
+    /// Called by the window: where `source` is right now, or `None` when silent.
+    pub fn get(&self, source: ModSource) -> Option<f32> {
+        let value = self.0[Self::index(source)].load(Ordering::Relaxed);
+        (!value.is_nan()).then_some(value)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -518,5 +567,28 @@ mod tests {
             routes.add(ModSource::Velocity, ModDest::Pitch, 1.0);
         }
         assert_eq!(routes.iter().count(), MAX_ROUTES);
+    }
+
+    #[test]
+    fn offset_sums_only_the_chosen_sources_routes() {
+        let mut routes = Routes::EMPTY;
+        routes.add(ModSource::Lfo, ModDest::Morph, 0.4);
+        routes.add(ModSource::Lfo, ModDest::Morph, 0.1);
+        routes.add(ModSource::ModEnv, ModDest::Morph, 0.5);
+        let offset = mod_offset(&routes, ModDest::Morph, ModSource::Lfo, -0.5).unwrap();
+        assert!((offset + 0.25).abs() < 1e-6);
+        assert_eq!(mod_offset(&routes, ModDest::Cutoff, ModSource::Lfo, 1.0), None);
+        assert_eq!(mod_offset(&routes, ModDest::Morph, ModSource::Random, 1.0), None);
+    }
+
+    #[test]
+    fn live_sources_are_none_while_silent() {
+        let live = LiveSources::default();
+        assert_eq!(live.get(ModSource::Lfo), None);
+        live.store(Some(SOURCES));
+        assert_eq!(live.get(ModSource::ModEnv), Some(0.8));
+        assert_eq!(live.get(ModSource::Random), Some(0.3));
+        live.store(None);
+        assert_eq!(live.get(ModSource::Velocity), None);
     }
 }

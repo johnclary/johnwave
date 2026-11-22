@@ -9,14 +9,14 @@ use crate::filter::FilterType;
 use crate::knob::Knob;
 use crate::slider::Slider;
 use crate::knob::ModTarget;
-use crate::modulation::{mod_span, ModDest, ModSlotParams, ModSource, Routes, SlotDest, SlotSource};
+use crate::modulation::{mod_offset, mod_span, LiveSources, ModDest, ModSlotParams, ModSource, Routes, SlotDest, SlotSource};
 use crate::trail::Trail;
 use crate::{SynthParams, VoiceMode};
 use nice_plug::context::gui::GuiContext;
 use nice_plug::editor::dpi::LogicalSize;
 use nice_plug::prelude::{AtomicF32, BoolParam, Enum, EnumParam, Param, ParamSetter};
 use std::sync::atomic::Ordering;
-use nice_plug_egui::{EguiEditorState, Frame, NiceEguiApp};
+use nice_plug_egui::{EguiEditorState, Frame, NiceEguiApp, RepaintNotifier};
 use std::sync::Arc;
 
 /// Window size in points. On a Retina screen egui draws at twice this many pixels.
@@ -39,6 +39,12 @@ pub struct JohnwaveEditor {
     /// How loud that voice is right now (0..1), set by the audio thread. The display
     /// draws the wave this tall, so it swells and fades with the amp envelope.
     display_level: Arc<AtomicF32>,
+    /// The newest voice's mod source values, set by the audio thread, for the live tick.
+    live_sources: Arc<LiveSources>,
+    /// Asks the host for another frame. `ctx.request_repaint()` doesn't get through in
+    /// the plugin window (frames only came while the mouse moved), but this flag does: the
+    /// window checks it 64 times a second.
+    repaint: RepaintNotifier,
     /// The faint copies of recent shapes drawn behind the screen's wave.
     trail: Trail,
 }
@@ -48,12 +54,16 @@ impl JohnwaveEditor {
         params: Arc<SynthParams>,
         display_morph: Arc<AtomicF32>,
         display_level: Arc<AtomicF32>,
+        live_sources: Arc<LiveSources>,
+        repaint: RepaintNotifier,
     ) -> Self {
         Self {
             params,
             gui_context: None,
             display_morph,
             display_level,
+            live_sources,
+            repaint,
             trail: Trail::default(),
         }
     }
@@ -92,7 +102,7 @@ impl NiceEguiApp for JohnwaveEditor {
         let level = self.display_level.load(Ordering::Relaxed);
         self.trail.update(now, morph, level);
         if self.trail.is_fading() {
-            ui.ctx().request_repaint();
+            self.repaint.request_repaint();
         }
 
         // Padding around the edges of the window.
@@ -136,7 +146,15 @@ impl JohnwaveEditor {
         });
 
         // Set by the chips in the header just above, so it's up to date for every knob.
-        let armed = armed_source(ui);
+        let armed = armed_source(ui).map(|source| Armed {
+            source,
+            value: self.live_sources.get(source),
+        });
+        // While the live tick is moving, keep drawing frames (about 64 a second). When
+        // the notes stop, the tick goes and so do the extra frames.
+        if armed.is_some_and(|a| a.value.is_some()) {
+            self.repaint.request_repaint();
+        }
 
         // Three rows, following the sound: the source, what shapes it, what moves it.
 
@@ -354,22 +372,33 @@ impl JohnwaveEditor {
 /// Width of a route's amount slider.
 const AMOUNT_SLIDER_WIDTH: f32 = 160.0;
 
-/// The mod matrix: every slot as a row, `[Source] [Dest] [amount]`. A new slot is
-/// blank (both Off), and a slot only does something once both are set.
 /// What makes a knob the mod destination `dest`: how far the routes push it, as knob
 /// positions 0..1, plus the slots mod mode edits. With a source `armed`, only its routes
-/// count. `to_position` turns an offset (in the destination's unit) into the knob
-/// position its value would land on.
+/// count, and `live` is where it's pushing the knob right now (the live tick).
+/// `to_position` turns an offset (in the destination's unit) into the knob position its
+/// value would land on.
 fn mod_target<'a>(
-    armed: Option<ModSource>,
+    armed: Option<Armed>,
     slots: &'a [ModSlotParams],
     routes: &Routes,
     dest: ModDest,
     to_position: impl Fn(f32) -> f32,
 ) -> ModTarget<'a> {
-    let span = mod_span(routes, dest, armed)
-        .map(|(lo, hi)| (to_position(lo).clamp(0.0, 1.0), to_position(hi).clamp(0.0, 1.0)));
-    ModTarget { dest: SlotDest::of(dest), span, slots }
+    let position = |offset| to_position(offset).clamp(0.0, 1.0);
+    let span = mod_span(routes, dest, armed.map(|a| a.source))
+        .map(|(lo, hi)| (position(lo), position(hi)));
+    let live = armed
+        .and_then(|a| mod_offset(routes, dest, a.source, a.value?))
+        .map(position);
+    ModTarget { dest: SlotDest::of(dest), span, live, slots }
+}
+
+/// The source armed for mod mode, and where it is right now (`None` while nothing is
+/// playing). `Clone, Copy` lets it be passed to every knob without fuss.
+#[derive(Clone, Copy)]
+struct Armed {
+    source: ModSource,
+    value: Option<f32>,
 }
 
 /// Where the armed source lives in egui's memory. It's window state, not a parameter:
@@ -432,7 +461,9 @@ pub fn mod_pink() -> egui::Color32 {
     egui::Color32::from_rgb(0xC9, 0x5D, 0xA7)
 }
 
-/// The slots in two columns: 1–8 on the left, 9–16 on the right.
+/// The mod matrix: every slot as a row, `[Source] [Dest] [amount]`. A new slot is
+/// blank (both Off), and a slot only does something once both are set. The slots sit
+/// in two columns: 1–8 on the left, 9–16 on the right.
 fn mod_matrix(ui: &mut egui::Ui, slots: &[ModSlotParams], setter: &ParamSetter) {
     let (left, right) = slots.split_at(slots.len().div_ceil(2));
     ui.horizontal_top(|ui| {

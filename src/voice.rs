@@ -131,6 +131,8 @@ pub struct Voice {
     /// How loud this voice is right now (amp envelope times velocity, 0..1), from the
     /// latest sample. Read by the plugin window.
     level: f32,
+    /// The modulation sources from the latest sample. Read by the window's live tick.
+    sources: ModSources,
 }
 
 impl Default for Voice {
@@ -154,6 +156,7 @@ impl Default for Voice {
             lfo: Lfo::default(),
             level: 0.0,
             morph: 0.0,
+            sources: ModSources::default(),
         }
     }
 }
@@ -293,6 +296,8 @@ impl Voice {
             velocity,
             random: lfo.random,
         };
+
+        self.sources = sources;
 
         // 2. Run them through the routes to get how far each setting is pushed.
         let off = modulation::apply(&p.routes, &sources);
@@ -450,14 +455,14 @@ impl VoicePool {
         self.last_note = None;
     }
 
-    /// The modulated Morph and the level of the most recently started voice that's still
-    /// sounding, as `(morph, level)`, or `None` when nothing is playing.
-    pub fn newest_display(&self) -> Option<(f32, f32)> {
+    /// The modulated Morph, the level and the mod sources of the most recently started
+    /// voice that's still sounding, or `None` when nothing is playing.
+    pub fn newest_display(&self) -> Option<(f32, f32, ModSources)> {
         self.voices
             .iter()
             .filter(|v| v.is_active())
             .max_by_key(|v| v.age)
-            .map(|v| (v.morph, v.level))
+            .map(|v| (v.morph, v.level, v.sources))
     }
 
     /// The single voice used in mono mode.

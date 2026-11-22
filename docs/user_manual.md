@@ -13,6 +13,7 @@ Grouped as they appear in the window, top to bottom.
 | Param | Range | Default | What it does |
 |---|---|---|---|
 | Voice Mode | Poly / Mono | Poly | Poly plays up to 8 notes at once. Mono plays one note, legato (see below). |
+| LFO / ENV / VEL / RAND | chips | none lit | Click one to enter mod mode for that source, click it again to leave. See [Mod mode](#mod-mode). Not saved with the patch. |
 
 ### Oscillator
 
@@ -109,9 +110,13 @@ See [The bitcrusher](#the-bitcrusher).
 
 ### Mod Matrix
 
-Six slots, each a row of `[Source] [Dest] [Amount]`. Click a Source or Dest button to
-step to the next choice, right-click for the previous one. A blank button means Off. A
-slot does something only once both are set; until then its amount slider is greyed out.
+Sixteen slots in two columns (1–8 on the left, 9–16 on the right), each a row of
+`[Source] [Dest] [Amount]`. Click a Source or Dest button to step to the next choice,
+right-click for the previous one. A blank button means Off. A slot does something only
+once both are set; until then its amount slider is greyed out.
+
+You can also set up routes straight from the knobs with [Mod mode](#mod-mode), which
+fills in these slots for you.
 
 | Param | Range | Default | What it does |
 |---|---|---|---|
@@ -327,9 +332,36 @@ Some starting points:
 - Mod Env → Pitch 2: osc 2 starts off-pitch and slides in, a "zap" on every note.
 
 **Mod arcs.** A knob with a route to it shows a pink arc along its ring, covering every
-position the modulation can push it to, with a small tick marking where the knob itself
-is set. Pitch routes show on the Coarse knob, Pitch 2 routes on Osc 2's Coarse, and
-Detune routes on the Unison Detune knob.
+position all its routes together can push it to, with a small cyan tick marking where
+the knob itself is set. Pitch routes show on the Coarse knob, Pitch 2 routes on Osc 2's
+Coarse, and Detune routes on the Unison Detune knob.
+
+### Mod mode
+
+Mod mode sets up modulation by dragging knobs, without going through the matrix.
+
+1. Click a chip in the header (**LFO**, **ENV**, **VEL** or **RAND**). It lights up pink
+   and the window switches to an x-ray view of that source:
+   - Knobs it already moves show a pink arc for **just that source's** reach.
+   - Knobs it could move but doesn't yet show a faint pink ring.
+   - Knobs that can't be modulated go dim and ignore the mouse.
+2. Drag a target knob up or down to set how much the source moves it. The knob's own
+   value doesn't change; you're setting the route's amount, and the readout shows it
+   in the destination's unit (like `LFO → Cutoff  +2.0 oct`). Hold Shift for fine control.
+   - The first drag on a new target claims the first free matrix slot. If all 16 are
+     used, the readout says **Matrix full**.
+   - Dragging a knob the source already reaches edits that route.
+3. Double-click a target knob to remove that source's routes to it.
+4. Click the lit chip again to leave mod mode. (Esc also works in hosts that pass
+   keys through to the plugin; Ableton doesn't.)
+
+**The live tick.** While a note plays in mod mode, a pink tick rides along each arc,
+showing where the source is pushing that knob right now. It follows the newest note,
+like the screen. With the LFO you see it sweep, with ENV rise and fall, with VEL sit
+where the key was struck, and with RAND jump each step.
+
+Greyed-out knobs (like the Osc 2 knobs with Osc 2 off) can't be routed in mod mode.
+Switch their section on first, or use the matrix.
 
 ### Poly and Mono
 

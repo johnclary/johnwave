@@ -20,7 +20,7 @@ mod voice;
 use env::AdsrSettings;
 use filter::FilterType;
 use lfo::{Lfo, SyncDivision};
-use modulation::{enum_id, ModSlotParams, Routes, SlotDest, SlotSource, MATRIX_SLOTS};
+use modulation::{enum_id, LiveSources, ModSlotParams, Routes, SlotDest, SlotSource, MATRIX_SLOTS};
 use nice_plug::plugin::ParamValue;
 use notes::NoteStack;
 use voice::{Porta, VoiceParams, VoicePool};
@@ -55,6 +55,8 @@ pub struct Johnwave {
     display_morph: Arc<AtomicF32>,
     /// How loud that voice is (0..1). The waveform is drawn this tall.
     display_level: Arc<AtomicF32>,
+    /// The newest voice's mod source values, for mod mode's live tick.
+    live_sources: Arc<LiveSources>,
     /// Lets the audio thread tell the window to redraw (the waveform moved).
     repaint: RepaintNotifier,
 }
@@ -597,6 +599,7 @@ impl Default for Johnwave {
             editor_state: editor::default_state(),
             display_morph: Arc::new(AtomicF32::new(f32::NAN)),
             display_level: Arc::new(AtomicF32::new(0.0)),
+            live_sources: Arc::new(LiveSources::default()),
             repaint: RepaintNotifier::new(),
         }
     }
@@ -683,7 +686,11 @@ impl Johnwave {
             return;
         }
         // NaN ("not a number") is the signal for "nothing is playing": the screen goes flat.
-        let (morph, level) = self.voices.newest_display().unwrap_or((f32::NAN, 0.0));
+        let newest = self.voices.newest_display();
+        // The live tick's values go across every block. The window asks for its own
+        // redraws while it's showing them, so no repaint request is needed here.
+        self.live_sources.store(newest.map(|(_, _, sources)| sources));
+        let (morph, level) = newest.map_or((f32::NAN, 0.0), |(m, l, _)| (m, l));
         let shown = self.display_morph.load(Ordering::Relaxed);
         let shown_level = self.display_level.load(Ordering::Relaxed);
         // NaN never equals anything, so check "silent vs. playing" before comparing values.
@@ -771,6 +778,8 @@ impl Plugin for Johnwave {
                 self.params.clone(),
                 self.display_morph.clone(),
                 self.display_level.clone(),
+                self.live_sources.clone(),
+                self.repaint.clone(),
             ),
         )
     }

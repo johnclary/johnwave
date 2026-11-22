@@ -110,6 +110,9 @@ pub struct ModTarget<'a> {
     /// How far the routes can push it, as knob positions `(lowest, highest)` 0..1, or
     /// `None` if nothing reaches it. In mod mode, only the armed source's routes count.
     pub span: Option<(f32, f32)>,
+    /// In mod mode, while a note plays: the knob position the armed source is pushing
+    /// it to right now (0..1). Drawn as a pink tick riding the arc.
+    pub live: Option<f32>,
     /// The matrix slots, which mod mode reads and writes.
     pub slots: &'a [ModSlotParams],
 }
@@ -406,6 +409,20 @@ impl<P: Param> egui::Widget for Knob<'_, P> {
                     [center + direction * (radius - half), center + direction * (radius + half)],
                     egui::Stroke::new(style.tick_width, arc_color),
                 );
+
+                // The live tick: where the armed source has the knob right now. Pink, as
+                // thick as the value tick but a little longer, since on the pink arc only
+                // the ends poking out past the ring show.
+                let live = self.mod_target.as_ref().and_then(|t| t.live);
+                if let (Some(live), true) = (live, enabled) {
+                    let angle = START_ANGLE + SWEEP * live;
+                    let direction = egui::vec2(angle.cos(), angle.sin());
+                    let half = half + 1.5;
+                    painter.line_segment(
+                        [center + direction * (radius - half), center + direction * (radius + half)],
+                        egui::Stroke::new(style.tick_width, mod_color),
+                    );
+                }
             }
 
             let visuals = ui.visuals();
