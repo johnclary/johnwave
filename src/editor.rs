@@ -174,11 +174,11 @@ impl JohnwaveEditor {
                         ui.add(Knob::new(&p.bend_range, &setter, "Bend"));
                         ui.add(Knob::new(&p.porta, &setter, "Porta"));
                         // Mix does nothing while Osc 2 is off.
-                        ui.add_enabled(p.osc2_on.value(), Knob::new(&p.osc_mix, &setter, "Mix").mod_target(mod_target(armed, &p.mod_slots,
+                        ui.add(Knob::new(&p.osc_mix, &setter, "Mix").mod_target(mod_target(armed, &p.mod_slots,
                             &routes,
                             ModDest::OscMix,
                             |offset| p.osc_mix.modulated_normalized_value() + offset,
-                        )));
+                        )).off(!p.osc2_on.value()));
                     });
                 });
 
@@ -210,19 +210,18 @@ impl JohnwaveEditor {
                     knob_row(ui, |ui| {
                         let morph2 = p.osc2_morph.value();
                         knob_wave(ui, |phase| crate::osc::shape(phase, 0.0, morph2));
-                        ui.add_enabled(osc2_on, Knob::new(&p.osc2_morph, &setter, "Shape").mod_target(mod_target(armed, &p.mod_slots,
+                        ui.add(Knob::new(&p.osc2_morph, &setter, "Shape").mod_target(mod_target(armed, &p.mod_slots,
                             &routes,
                             ModDest::Osc2Morph,
                             |offset| p.osc2_morph.modulated_normalized_value() + offset,
-                        )));
+                        )).off(!osc2_on));
                         // Pitch 2 routes show here. The range is 72 semitones (−36..+36).
-                        ui.add_enabled(
-                            osc2_on,
+                        ui.add(
                             Knob::new(&p.osc2_coarse, &setter, "Coarse").bipolar().mod_target(mod_target(armed, &p.mod_slots,
                                 &routes,
                                 ModDest::Osc2Pitch,
                                 |offset| p.osc2_coarse.modulated_normalized_value() + offset / 72.0,
-                            )),
+                            )).off(!osc2_on),
                         );
                         ui.add_enabled(osc2_on, Knob::new(&p.osc2_fine, &setter, "Fine").bipolar());
                     });
@@ -339,14 +338,14 @@ impl JohnwaveEditor {
                         // Detune and Width do nothing with a single voice.
                         let spread = unison_on && p.unison_voices.value() > 1;
                         // Detune routes are in cents, on a skewed knob.
-                        ui.add_enabled(spread, Knob::new(&p.unison_detune, &setter, "Detune").mod_target(mod_target(armed, &p.mod_slots,
+                        ui.add(Knob::new(&p.unison_detune, &setter, "Detune").mod_target(mod_target(armed, &p.mod_slots,
                             &routes,
                             ModDest::UnisonDetune,
                             |offset| {
                                 p.unison_detune
                                     .preview_normalized(p.unison_detune.modulated_plain_value() + offset)
                             },
-                        )));
+                        )).off(!spread));
                         ui.add_enabled(spread, Knob::new(&p.unison_width, &setter, "Width"));
                         row_toggle(ui, "ON", &p.unison_on, &setter);
                     });
@@ -357,25 +356,25 @@ impl JohnwaveEditor {
                     let crush_on = p.crush_on.value();
                     knob_row(ui, |ui| {
                         // Bits is a straight line from 1 to 16, so one bit is 1/15 of the way.
-                        ui.add_enabled(crush_on, Knob::new(&p.crush_bits, &setter, "Bits").mod_target(mod_target(armed, &p.mod_slots,
+                        ui.add(Knob::new(&p.crush_bits, &setter, "Bits").mod_target(mod_target(armed, &p.mod_slots,
                             &routes,
                             ModDest::CrushBits,
                             |offset| p.crush_bits.modulated_normalized_value() + offset / 15.0,
-                        )));
+                        )).off(!crush_on));
                         // Steps routes are in octaves, like Cutoff.
-                        ui.add_enabled(crush_on, Knob::new(&p.crush_steps, &setter, "Steps").mod_target(mod_target(armed, &p.mod_slots,
+                        ui.add(Knob::new(&p.crush_steps, &setter, "Steps").mod_target(mod_target(armed, &p.mod_slots,
                             &routes,
                             ModDest::CrushSteps,
                             |offset| {
                                 let steps = p.crush_steps.modulated_plain_value() * offset.exp2();
                                 p.crush_steps.preview_normalized(steps)
                             },
-                        )));
-                        ui.add_enabled(crush_on, Knob::new(&p.crush_mix, &setter, "Mix").mod_target(mod_target(armed, &p.mod_slots,
+                        )).off(!crush_on));
+                        ui.add(Knob::new(&p.crush_mix, &setter, "Mix").mod_target(mod_target(armed, &p.mod_slots,
                             &routes,
                             ModDest::CrushMix,
                             |offset| p.crush_mix.modulated_normalized_value() + offset,
-                        )));
+                        )).off(!crush_on));
                         row_toggle(ui, "ON", &p.crush_on, &setter);
                     });
                 });
@@ -427,6 +426,16 @@ struct Armed {
 fn armed_id() -> egui::Id {
     egui::Id::unique("armed_mod_source")
 }
+
+/// True while a source is armed. In mod mode everything that isn't a mod target (the
+/// buttons, switches, steppers and the screen) fades and stops taking clicks, so the
+/// knobs you can paint stand out. The mod chips stay live so you can leave.
+fn in_mod_mode(ui: &egui::Ui) -> bool {
+    armed_source(ui).is_some()
+}
+
+/// How visible the screen stays in mod mode (0..1).
+const MOD_MODE_FADE: f32 = 0.3;
 
 /// The source armed for mod mode, or `None` when it's off.
 pub fn armed_source(ui: &egui::Ui) -> Option<ModSource> {
@@ -514,7 +523,11 @@ const READOUT_HEIGHT: f32 = 30.0;
 fn osc_display(ui: &mut egui::Ui, morph: f32, level: f32, trail: &Trail, height: f32) {
     let size = egui::vec2(READOUT_WIDTH, height);
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-    let painter = ui.painter_at(rect);
+    let mut painter = ui.painter_at(rect);
+    // Faded in mod mode, like everything else that isn't a mod target.
+    if in_mod_mode(ui) {
+        painter.multiply_opacity(MOD_MODE_FADE);
+    }
     let faint = ui.visuals().weak_text_color().gamma_multiply(0.5);
 
     screen_frame(&painter, rect, faint);
@@ -820,7 +833,7 @@ fn set<P: Param>(setter: &ParamSetter, param: &P, value: P::Plain) {
 fn toggle_button(ui: &mut egui::Ui, label: &str, param: &BoolParam, setter: &ParamSetter) {
     let on = param.value();
     let clicked = ui
-        .scope(|ui| {
+        .add_enabled_ui(!in_mod_mode(ui), |ui| {
             cyan_selection(ui);
             let response = ui.selectable_label(on, label);
             if !on {
@@ -862,24 +875,26 @@ fn switch<T: Enum + PartialEq + Copy + 'static>(
     choices: &[(T, &str)],
 ) {
     let current = param.value();
-    // A thin outline around both halves, so they read as one switch.
-    egui::Frame::new()
-        .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color().gamma_multiply(0.5)))
-        .corner_radius(4.0)
-        .inner_margin(2.0)
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
-                cyan_selection(ui);
-                for &(choice, label) in choices {
-                    let response = ui.selectable_label(current == choice, label);
-                    if response.clicked() && current != choice {
-                        set(setter, param, choice);
+    ui.add_enabled_ui(!in_mod_mode(ui), |ui| {
+        // A thin outline around both halves, so they read as one switch.
+        egui::Frame::new()
+            .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color().gamma_multiply(0.5)))
+            .corner_radius(4.0)
+            .inner_margin(2.0)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    cyan_selection(ui);
+                    for &(choice, label) in choices {
+                        let response = ui.selectable_label(current == choice, label);
+                        if response.clicked() && current != choice {
+                            set(setter, param, choice);
+                        }
+                        crate::readout::report(ui, param, &response);
                     }
-                    crate::readout::report(ui, param, &response);
-                }
+                });
             });
-        });
+    });
 }
 
 /// `‹ value ›` buttons that step through an enum's options in order. Stops at the
@@ -891,7 +906,7 @@ fn stepper<T: Enum + PartialEq + 'static>(
 ) {
     let current = param.value().to_index();
     let last = T::variants().len() - 1;
-    ui.horizontal(|ui| {
+    ui.add_enabled_ui(!in_mod_mode(ui), |ui| ui.horizontal(|ui| {
         if ui
             .add_enabled(current > 0, egui::Button::new("‹"))
             .clicked()
@@ -906,5 +921,5 @@ fn stepper<T: Enum + PartialEq + 'static>(
         {
             set(setter, param, T::from_index(current + 1));
         }
-    });
+    }));
 }

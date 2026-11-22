@@ -89,6 +89,9 @@ const DRAG_RANGE: f32 = 200.0;
 const FINE_FACTOR: f32 = 10.0;
 /// Space between the bottom of the arc (its two ends) and the top of the name.
 const LABEL_GAP: f32 = 7.0;
+/// How bright the pink is (0..1 of the full mod pink) on a mod target whose section is
+/// switched off, in mod mode. Dim enough to read as off, bright enough to see it's usable.
+const OFF_TARGET_STRENGTH: f32 = 0.55;
 
 /// A knob for one parameter. The `'a` says it borrows the parameter and setter, which only
 /// has to last for this one frame (egui rebuilds the knob every frame).
@@ -101,6 +104,9 @@ pub struct Knob<'a, P: Param> {
     bipolar: bool,
     /// Set for knobs that are mod destinations: their arc, and what mod mode edits.
     mod_target: Option<ModTarget<'a>>,
+    /// Its section is switched off (like Osc 2's knobs while Osc 2 is off). It's greyed
+    /// out and can't be turned, but mod mode can still paint routes onto it.
+    off: bool,
 }
 
 /// What makes a knob a mod destination.
@@ -126,6 +132,7 @@ impl<'a, P: Param> Knob<'a, P> {
             style: KnobStyle::default(),
             bipolar: false,
             mod_target: None,
+            off: false,
         }
     }
 
@@ -141,6 +148,14 @@ impl<'a, P: Param> Knob<'a, P> {
     /// paint routes onto it.
     pub fn mod_target(mut self, target: ModTarget<'a>) -> Self {
         self.mod_target = Some(target);
+        self
+    }
+
+    /// Grey the knob out while `off` is true, like `ui.add_enabled(false, ..)`, except
+    /// that mod mode can still route to it. So you can set up mod on a section that's
+    /// switched off, then switch it on.
+    pub fn off(mut self, off: bool) -> Self {
+        self.off = off;
         self
     }
 
@@ -308,9 +323,10 @@ impl<P: Param> egui::Widget for Knob<'_, P> {
             style.diameter / 2.0 + style.arc_bottom() + LABEL_GAP + style.label_text_size,
         );
         // In mod mode, a knob that can't be modulated sits out: dimmed, and deaf to the
-        // mouse, so it's clear what dragging does right now.
+        // mouse, so it's clear what dragging does right now. Outside mod mode, a knob
+        // whose section is off sits out the same way.
         let armed = crate::editor::armed_source(ui);
-        let inert = armed.is_some() && self.mod_target.is_none();
+        let inert = if armed.is_some() { self.mod_target.is_none() } else { self.off };
         let sense = if inert { egui::Sense::hover() } else { egui::Sense::click_and_drag() };
         let (rect, response) = ui.allocate_exact_size(size, sense);
         let mut response = if inert {
@@ -322,7 +338,8 @@ impl<P: Param> egui::Widget for Knob<'_, P> {
         // --- Mouse ---
 
         match (armed, &self.mod_target) {
-            (None, _) => self.value_input(ui, &mut response),
+            (None, _) if !inert => self.value_input(ui, &mut response),
+            (None, _) => {}
             (Some(source), Some(target)) => self.paint_route(ui, &mut response, source, target),
             (Some(_), None) => {}
         }
@@ -337,15 +354,25 @@ impl<P: Param> egui::Widget for Knob<'_, P> {
 
             // Light up a little while the mouse is on it.
             let active = response.hovered() || response.dragged();
-            // A greyed-out knob (like Rate while the LFO is synced), or one sitting out
-            // mod mode, is drawn much dimmer.
-            let enabled = ui.is_enabled() && !inert;
+            // A greyed-out knob (like Rate while the LFO is synced), one whose section is
+            // off, or one sitting out mod mode, is drawn much dimmer.
+            let enabled = ui.is_enabled() && !inert && !self.off;
             let arc_color = if !enabled {
                 style.arc_color.gamma_multiply(0.3)
             } else if active {
                 style.arc_color
             } else {
                 style.arc_color.gamma_multiply(0.85)
+            };
+
+            // Pink for the mod arc and, in mod mode, the label. A switched-off target that
+            // mod mode can still paint gets a dimmer pink, so it reads as off but usable.
+            let mod_color = if enabled {
+                style.mod_color
+            } else if armed.is_some() && !inert {
+                style.mod_color.gamma_multiply(OFF_TARGET_STRENGTH)
+            } else {
+                style.mod_color.gamma_multiply(0.3)
             };
 
             // The faint full track.
@@ -374,17 +401,8 @@ impl<P: Param> egui::Widget for Knob<'_, P> {
             // The mod arc: drawn along the value arc's ring, after it so it sits on top
             // (see `mod_arc_width` for how much cyan it leaves showing). Even a tiny span
             // gets a few points of arc, so a route with a small amount is still visible.
-            //
-            // In mod mode the span covers only the armed source (the x-ray view). A target
-            // it doesn't reach yet gets a faint full ring instead, as an invitation.
-            let mod_color = if enabled { style.mod_color } else { style.mod_color.gamma_multiply(0.3) };
+            // In mod mode it covers only the armed source (the x-ray view).
             let span = self.mod_target.as_ref().and_then(|t| t.span);
-            if armed.is_some() && span.is_none() && !inert && enabled {
-                painter.add(egui::Shape::line(
-                    arc_points(center, radius, 0.0, 1.0),
-                    egui::Stroke::new(1.5, mod_color.gamma_multiply(0.5)),
-                ));
-            }
             if let Some((lo, hi)) = span {
                 let min_len = 0.02;
                 let (lo, hi) = if hi - lo < min_len {
@@ -426,17 +444,21 @@ impl<P: Param> egui::Widget for Knob<'_, P> {
             }
 
             let visuals = ui.visuals();
-            // The name underneath. (The value shows in the readout box instead.)
+            // The name underneath. (The value shows in the readout box instead.) In mod
+            // mode a target's name turns pink, so the targets stand out across the window.
+            let label_color = if armed.is_some() && !inert && ui.is_enabled() {
+                mod_color
+            } else if !enabled {
+                visuals.weak_text_color()
+            } else {
+                visuals.text_color()
+            };
             painter.text(
                 egui::pos2(center.x, center.y + style.arc_bottom() + LABEL_GAP),
                 egui::Align2::CENTER_TOP,
                 self.label,
                 egui::FontId::proportional(style.label_text_size),
-                if enabled {
-                    visuals.text_color()
-                } else {
-                    visuals.weak_text_color()
-                },
+                label_color,
             );
         }
 
