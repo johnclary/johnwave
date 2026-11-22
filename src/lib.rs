@@ -95,8 +95,11 @@ pub struct SynthParams {
     #[id = "osc_mix"]
     pub osc_mix: FloatParam,
 
-    // Unison (see `unison.rs`). One voice, the default, is no unison.
-    /// How many copies of the oscillators each note plays.
+    // Unison (see `unison.rs`).
+    /// The on/off switch. While off, each note plays one copy, whatever Voices says.
+    #[id = "uni_on"]
+    pub unison_on: BoolParam,
+    /// How many copies of the oscillators each note plays (while Unison is on).
     #[id = "uni_voices"]
     pub unison_voices: IntParam,
     /// How far the outer copies are detuned, in cents.
@@ -334,9 +337,12 @@ impl Default for SynthParams {
                 .with_value_to_string(formatters::v2s_f32_percentage(0))
                 .with_string_to_value(formatters::s2v_f32_percentage()),
 
+            // Off by default, so a new instance sounds the same as before. Voices starts
+            // at 3, so switching Unison on does something straight away (like Crush).
+            unison_on: BoolParam::new("Unison", false),
             unison_voices: IntParam::new(
                 "Unison Voices",
-                1,
+                3,
                 IntRange::Linear { min: 1, max: unison::MAX_VOICES as i32 },
             ),
             // Skewed so the small detunes, where most of the sweet spots are, get more
@@ -901,7 +907,12 @@ impl Plugin for Johnwave {
             // Read every knob once per sample, then share the values with all voices.
             let lfo_shape = self.params.lfo_shape.smoothed.next();
             let shared = self.free_lfo.next(lfo_rate, self.sample_rate, lfo_shape);
-            let unison_voices = self.params.unison_voices.value() as usize;
+            // Unison off means one copy, the plain sound.
+            let unison_voices = if self.params.unison_on.value() {
+                self.params.unison_voices.value() as usize
+            } else {
+                1
+            };
             let p = VoiceParams {
                 morph: self.params.morph.smoothed.next(),
                 osc2_amount: self.osc2_fade.next(),

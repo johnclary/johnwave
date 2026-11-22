@@ -20,8 +20,11 @@ use nice_plug_egui::{EguiEditorState, Frame, NiceEguiApp, RepaintNotifier};
 use std::sync::Arc;
 
 /// Window size in points. On a Retina screen egui draws at twice this many pixels.
-pub const WIDTH: f64 = 760.0;
-pub const HEIGHT: f64 = 760.0;
+/// The width is just what the three columns need, so the right one ends at the edge.
+pub const WIDTH: f64 =
+    (2.0 * MARGIN_X + LEFT_COLUMN_WIDTH + MIDDLE_COLUMN_WIDTH + RIGHT_COLUMN_WIDTH + 2.0 * COLUMN_GAP) as f64;
+/// A first guess, to be tuned once the layout's been seen.
+pub const HEIGHT: f64 = 520.0;
 
 pub fn default_state() -> Arc<EguiEditorState> {
     EguiEditorState::from_size(LogicalSize::new(WIDTH, HEIGHT), 1.0)
@@ -122,7 +125,7 @@ impl JohnwaveEditor {
                 .map(|slot| (slot.source.value(), slot.dest.value(), slot.amount.value())),
         );
 
-        // Header: the title and the Poly/Mono switch on the left, the readout box at the
+        // Header: the title, Poly/Mono and Legato on the left, the readout box at the
         // right edge.
         let mut readout_rect = egui::Rect::NOTHING;
         ui.horizontal(|ui| {
@@ -134,8 +137,9 @@ impl JohnwaveEditor {
                 &setter,
                 &[(VoiceMode::Poly, "POLY"), (VoiceMode::Mono, "MONO")],
             );
-            ui.add_space(16.0);
-            mod_chips(ui);
+            // LEGATO only matters while Porta is on, so it greys out at Off.
+            let porta_on = p.porta.value() > 0.0;
+            ui.add_enabled_ui(porta_on, |ui| toggle_button(ui, "LEGATO", &p.porta_legato, &setter));
             // Only reserve the readout's space here. It's drawn at the very end, after
             // every control has said whether the mouse is on it.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -145,7 +149,8 @@ impl JohnwaveEditor {
             });
         });
 
-        // Set by the chips in the header just above, so it's up to date for every knob.
+        // Which chip is armed. The chips are in the middle column, so the left column's
+        // knobs see a click on a chip one frame late, which is too quick to notice.
         let armed = armed_source(ui).map(|source| Armed {
             source,
             value: self.live_sources.get(source),
@@ -156,227 +161,224 @@ impl JohnwaveEditor {
             self.repaint.request_repaint();
         }
 
-        // Three rows, following the sound: the source, what shapes it, what moves it.
+        // Three columns side by side, each a stack of panels.
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = COLUMN_GAP;
 
-        // Row 1: the oscillator (with its display) and tuning.
-        row(ui, |ui| {
-            group(ui, |ui| {
-                knob_section(ui, "Oscillator", |ui| {
-                    ui.add(Knob::new(&p.morph, &setter, "Shape").mod_target(mod_target(armed, &p.mod_slots, 
-                        &routes,
-                        ModDest::Morph,
-                        |offset| p.morph.modulated_normalized_value() + offset,
-                    )));
-                    // The shape the knob is set to (the screen on the right shows what's
-                    // actually playing, after modulation).
-                    let morph = p.morph.value();
-                    knob_wave(ui, |phase| crate::osc::shape(phase, 0.0, morph));
+            // Left column: the sound's source, then the filter.
+            column(ui, LEFT_COLUMN_WIDTH, |ui| {
+                panel(ui, "Global", |ui| {
+                    knob_row(ui, |ui| {
+                        ui.add(Knob::new(&p.gain, &setter, "Gain"));
+                        ui.add(Knob::new(&p.pan, &setter, "Pan").bipolar());
+                        ui.add(Knob::new(&p.bend_range, &setter, "Bend"));
+                        ui.add(Knob::new(&p.porta, &setter, "Porta"));
+                        // Mix does nothing while Osc 2 is off.
+                        ui.add_enabled(p.osc2_on.value(), Knob::new(&p.osc_mix, &setter, "Mix").mod_target(mod_target(armed, &p.mod_slots,
+                            &routes,
+                            ModDest::OscMix,
+                            |offset| p.osc_mix.modulated_normalized_value() + offset,
+                        )));
+                    });
+                });
+
+                panel(ui, "Oscillators", |ui| {
+                    sub_label(ui, "Osc 1");
+                    knob_row(ui, |ui| {
+                        let morph = p.morph.value();
+                        knob_wave(ui, |phase| crate::osc::shape(phase, 0.0, morph));
+                        ui.add(Knob::new(&p.morph, &setter, "Shape").mod_target(mod_target(armed, &p.mod_slots,
+                            &routes,
+                            ModDest::Morph,
+                            |offset| p.morph.modulated_normalized_value() + offset,
+                        )));
+                        // Pitch routes show here. Its range is 48 semitones (−24..+24), so
+                        // one semitone is 1/48 of the way round.
+                        ui.add(Knob::new(&p.coarse, &setter, "Coarse").bipolar().mod_target(mod_target(armed, &p.mod_slots,
+                            &routes,
+                            ModDest::Pitch,
+                            |offset| p.coarse.modulated_normalized_value() + offset / 48.0,
+                        )));
+                        ui.add(Knob::new(&p.fine, &setter, "Fine").bipolar());
+                        // DUAL switches Osc 2 on. It ends osc 1's row, so both rows' knobs
+                        // line up.
+                        row_toggle(ui, "DUAL", &p.osc2_on, &setter);
+                    });
+                    // Osc 2's knobs grey out while DUAL is off.
+                    let osc2_on = p.osc2_on.value();
+                    sub_label(ui, "Osc 2");
+                    knob_row(ui, |ui| {
+                        let morph2 = p.osc2_morph.value();
+                        knob_wave(ui, |phase| crate::osc::shape(phase, 0.0, morph2));
+                        ui.add_enabled(osc2_on, Knob::new(&p.osc2_morph, &setter, "Shape").mod_target(mod_target(armed, &p.mod_slots,
+                            &routes,
+                            ModDest::Osc2Morph,
+                            |offset| p.osc2_morph.modulated_normalized_value() + offset,
+                        )));
+                        // Pitch 2 routes show here. The range is 72 semitones (−36..+36).
+                        ui.add_enabled(
+                            osc2_on,
+                            Knob::new(&p.osc2_coarse, &setter, "Coarse").bipolar().mod_target(mod_target(armed, &p.mod_slots,
+                                &routes,
+                                ModDest::Osc2Pitch,
+                                |offset| p.osc2_coarse.modulated_normalized_value() + offset / 72.0,
+                            )),
+                        );
+                        ui.add_enabled(osc2_on, Knob::new(&p.osc2_fine, &setter, "Fine").bipolar());
+                    });
+                });
+
+                panel(ui, "Filter", |ui| {
+                    knob_row(ui, |ui| {
+                        // Cutoff routes are in octaves: each one doubles (or halves) the Hz.
+                        ui.add(Knob::new(&p.cutoff, &setter, "Cutoff").mod_target(mod_target(armed, &p.mod_slots,
+                            &routes,
+                            ModDest::Cutoff,
+                            |offset| {
+                                let hz = p.cutoff.modulated_plain_value() * offset.exp2();
+                                p.cutoff.preview_normalized(hz)
+                            },
+                        )));
+                        ui.add(Knob::new(&p.resonance, &setter, "Res").mod_target(mod_target(armed, &p.mod_slots,
+                            &routes,
+                            ModDest::Resonance,
+                            |offset| p.resonance.modulated_normalized_value() + offset,
+                        )));
+                        ui.add(Knob::new(&p.filter_drive, &setter, "Drive").mod_target(mod_target(armed, &p.mod_slots,
+                            &routes,
+                            ModDest::Drive,
+                            |offset| p.filter_drive.modulated_normalized_value() + offset,
+                        )));
+                    });
+                    // The type and slope sit under the knobs.
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        switch(
+                            ui,
+                            &p.filter_type,
+                            &setter,
+                            &[
+                                (FilterType::LowPass, "LP"),
+                                (FilterType::HighPass, "HP"),
+                                (FilterType::BandPass, "BP"),
+                                (FilterType::Notch, "NOTCH"),
+                            ],
+                        );
+                        switch(
+                            ui,
+                            &p.filter_slope,
+                            &setter,
+                            &[(FilterSlope::Db12, "12"), (FilterSlope::Db24, "24")],
+                        );
+                    });
                 });
             });
-            group(ui, |ui| {
-                // LEGATO only matters while Porta is on, so it greys out at Off.
-                let porta_on = p.porta.value() > 0.0;
-                section_heading(ui, "Tuning", |ui| {
-                    ui.add_enabled_ui(porta_on, |ui| toggle_button(ui, "LEGATO", &p.porta_legato, &setter));
+
+            // Middle column: the amp envelope, then everything that moves things.
+            column(ui, MIDDLE_COLUMN_WIDTH, |ui| {
+                panel(ui, "Amp Envelope", |ui| {
+                    knob_row(ui, |ui| {
+                        ui.add(Knob::new(&p.attack, &setter, "A"));
+                        ui.add(Knob::new(&p.decay, &setter, "D"));
+                        ui.add(Knob::new(&p.sustain, &setter, "S"));
+                        ui.add(Knob::new(&p.release, &setter, "R"));
+                    });
                 });
-                knob_row(ui, |ui| {
-                    // Pitch routes show here, since Coarse is in semitones too. Its range is
-                    // 48 semitones (−24..+24), so one semitone is 1/48 of the way round.
-                    ui.add(Knob::new(&p.coarse, &setter, "Coarse").bipolar().mod_target(mod_target(armed, &p.mod_slots, 
-                        &routes,
-                        ModDest::Pitch,
-                        |offset| p.coarse.modulated_normalized_value() + offset / 48.0,
-                    )));
-                    ui.add(Knob::new(&p.fine, &setter, "Fine").bipolar());
-                    ui.add(Knob::new(&p.bend_range, &setter, "Bend"));
-                    ui.add(Knob::new(&p.porta, &setter, "Porta"));
+
+                // The chips arm a source for mod mode. Two of them are the Mod Env and
+                // LFO just below, so they share one panel.
+                panel(ui, "Modulation", |ui| {
+                    sub_label(ui, "Source Select");
+                    mod_chips(ui);
+
+                    sub_label(ui, "Mod Env");
+                    knob_row(ui, |ui| {
+                        ui.add(Knob::new(&p.mod_env_attack, &setter, "A"));
+                        ui.add(Knob::new(&p.mod_env_decay, &setter, "D"));
+                        ui.add(Knob::new(&p.mod_env_sustain, &setter, "S"));
+                        ui.add(Knob::new(&p.mod_env_release, &setter, "R"));
+                    });
+
+                    ui.add_space(4.0);
+                    ui.separator();
+
+                    // Only one of Rate / Sync Rate is in charge, so grey out the other.
+                    let synced = p.lfo_sync.value();
+                    let lfo_shape = p.lfo_shape.value();
+                    sub_label(ui, "LFO");
+                    knob_row(ui, |ui| {
+                        ui.add(Knob::new(&p.lfo_shape, &setter, "Shape"));
+                        knob_wave(ui, |phase| crate::lfo::wave(phase, lfo_shape, KNOB_WAVE_EDGE));
+                        ui.add_enabled(!synced, Knob::new(&p.lfo_rate, &setter, "Rate"));
+                        // Right of centre fades the LFO in on each note, left fades it out.
+                        ui.add(Knob::new(&p.lfo_fade, &setter, "Fade").bipolar());
+                    });
+                    ui.add_space(6.0);
+                    // The sync rate sits right after Sync, since that's what it belongs to.
+                    ui.horizontal(|ui| {
+                        toggle_button(ui, "RETRIG", &p.lfo_retrigger, &setter);
+                        toggle_button(ui, "SYNC", &p.lfo_sync, &setter);
+                        ui.add_enabled_ui(synced, |ui| stepper(ui, &p.lfo_division, &setter));
+                    });
                 });
             });
-            // The screen sits at the right edge, under the readout, as wide as it. It's
-            // as tall as the row so far, so its bottom lines up with the knob names.
-            let height = ui.min_rect().height();
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+
+            // Right column: the screen, then the effects-ish extras.
+            column(ui, RIGHT_COLUMN_WIDTH, |ui| {
+                // Down by half a panel title, so its top lines up with the outlines.
+                ui.add_space(PANEL_GAP + PANEL_TITLE_SIZE / 2.0);
                 let morph = self.display_morph.load(Ordering::Relaxed);
                 let level = self.display_level.load(Ordering::Relaxed);
-                osc_display(ui, morph, level, &self.trail, height);
-            });
-        });
+                osc_display(ui, morph, level, &self.trail, SCREEN_HEIGHT);
 
-        // Row 1b: the second oscillator and unison. Their own row for now, since row 1
-        // is full; the layout rework will find them a proper home.
-        row(ui, |ui| {
-            group(ui, |ui| {
-                // The knobs grey out while Osc 2 is switched off.
-                let osc2_on = p.osc2_on.value();
-                section_heading(ui, "Osc 2", |ui| toggle_button(ui, "ON", &p.osc2_on, &setter));
-                knob_row(ui, |ui| {
-                    ui.add_enabled(osc2_on, Knob::new(&p.osc2_morph, &setter, "Shape").mod_target(mod_target(armed, &p.mod_slots, 
-                        &routes,
-                        ModDest::Osc2Morph,
-                        |offset| p.osc2_morph.modulated_normalized_value() + offset,
-                    )));
-                    let morph2 = p.osc2_morph.value();
-                    knob_wave(ui, |phase| crate::osc::shape(phase, 0.0, morph2));
-                    // Pitch 2 routes show here. The range is 72 semitones (−36..+36).
-                    ui.add_enabled(
-                        osc2_on,
-                        Knob::new(&p.osc2_coarse, &setter, "Coarse").bipolar().mod_target(mod_target(armed, &p.mod_slots, 
+                panel(ui, "Unison", |ui| {
+                    // The knobs grey out while Unison is switched off.
+                    let unison_on = p.unison_on.value();
+                    knob_row(ui, |ui| {
+                        ui.add_enabled(unison_on, Knob::new(&p.unison_voices, &setter, "Voices"));
+                        // Detune and Width do nothing with a single voice.
+                        let spread = unison_on && p.unison_voices.value() > 1;
+                        // Detune routes are in cents, on a skewed knob.
+                        ui.add_enabled(spread, Knob::new(&p.unison_detune, &setter, "Detune").mod_target(mod_target(armed, &p.mod_slots,
                             &routes,
-                            ModDest::Osc2Pitch,
-                            |offset| p.osc2_coarse.modulated_normalized_value() + offset / 72.0,
-                        )),
-                    );
-                    ui.add_enabled(osc2_on, Knob::new(&p.osc2_fine, &setter, "Fine").bipolar());
-                    ui.add_enabled(osc2_on, Knob::new(&p.osc_mix, &setter, "Mix").mod_target(mod_target(armed, &p.mod_slots, 
-                        &routes,
-                        ModDest::OscMix,
-                        |offset| p.osc_mix.modulated_normalized_value() + offset,
-                    )));
+                            ModDest::UnisonDetune,
+                            |offset| {
+                                p.unison_detune
+                                    .preview_normalized(p.unison_detune.modulated_plain_value() + offset)
+                            },
+                        )));
+                        ui.add_enabled(spread, Knob::new(&p.unison_width, &setter, "Width"));
+                        row_toggle(ui, "ON", &p.unison_on, &setter);
+                    });
                 });
-            });
-            group(ui, |ui| {
-                knob_section(ui, "Unison", |ui| {
-                    ui.add(Knob::new(&p.unison_voices, &setter, "Voices"));
-                    // Detune and Width do nothing with a single voice.
-                    let spread = p.unison_voices.value() > 1;
-                    // Detune routes are in cents, on a skewed knob.
-                    ui.add_enabled(spread, Knob::new(&p.unison_detune, &setter, "Detune").mod_target(mod_target(armed, &p.mod_slots, 
-                        &routes,
-                        ModDest::UnisonDetune,
-                        |offset| {
-                            p.unison_detune
-                                .preview_normalized(p.unison_detune.modulated_plain_value() + offset)
-                        },
-                    )));
-                    ui.add_enabled(spread, Knob::new(&p.unison_width, &setter, "Width"));
-                });
-            });
-        });
 
-        // Row 2: filter and amp (its envelope plus the output level).
-        row(ui, |ui| {
-            group(ui, |ui| {
-                knob_section(ui, "Filter", |ui| {
-                    // Cutoff routes are in octaves: each one doubles (or halves) the Hz.
-                    ui.add(Knob::new(&p.cutoff, &setter, "Cutoff").mod_target(mod_target(armed, &p.mod_slots, 
-                        &routes,
-                        ModDest::Cutoff,
-                        |offset| {
-                            let hz = p.cutoff.modulated_plain_value() * offset.exp2();
-                            p.cutoff.preview_normalized(hz)
-                        },
-                    )));
-                    ui.add(Knob::new(&p.resonance, &setter, "Res").mod_target(mod_target(armed, &p.mod_slots, 
-                        &routes,
-                        ModDest::Resonance,
-                        |offset| p.resonance.modulated_normalized_value() + offset,
-                    )));
-                    ui.add(Knob::new(&p.filter_drive, &setter, "Drive").mod_target(mod_target(armed, &p.mod_slots, 
-                        &routes,
-                        ModDest::Drive,
-                        |offset| p.filter_drive.modulated_normalized_value() + offset,
-                    )));
+                panel(ui, "Crush", |ui| {
+                    // The knobs grey out while Crush is switched off.
+                    let crush_on = p.crush_on.value();
+                    knob_row(ui, |ui| {
+                        // Bits is a straight line from 1 to 16, so one bit is 1/15 of the way.
+                        ui.add_enabled(crush_on, Knob::new(&p.crush_bits, &setter, "Bits").mod_target(mod_target(armed, &p.mod_slots,
+                            &routes,
+                            ModDest::CrushBits,
+                            |offset| p.crush_bits.modulated_normalized_value() + offset / 15.0,
+                        )));
+                        // Steps routes are in octaves, like Cutoff.
+                        ui.add_enabled(crush_on, Knob::new(&p.crush_steps, &setter, "Steps").mod_target(mod_target(armed, &p.mod_slots,
+                            &routes,
+                            ModDest::CrushSteps,
+                            |offset| {
+                                let steps = p.crush_steps.modulated_plain_value() * offset.exp2();
+                                p.crush_steps.preview_normalized(steps)
+                            },
+                        )));
+                        ui.add_enabled(crush_on, Knob::new(&p.crush_mix, &setter, "Mix").mod_target(mod_target(armed, &p.mod_slots,
+                            &routes,
+                            ModDest::CrushMix,
+                            |offset| p.crush_mix.modulated_normalized_value() + offset,
+                        )));
+                        row_toggle(ui, "ON", &p.crush_on, &setter);
+                    });
                 });
-                // The type and slope sit under the knobs, like the LFO's buttons under its own.
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    switch(
-                        ui,
-                        &p.filter_type,
-                        &setter,
-                        &[
-                            (FilterType::LowPass, "LP"),
-                            (FilterType::HighPass, "HP"),
-                            (FilterType::BandPass, "BP"),
-                            (FilterType::Notch, "NOTCH"),
-                        ],
-                    );
-                    switch(
-                        ui,
-                        &p.filter_slope,
-                        &setter,
-                        &[(FilterSlope::Db12, "12"), (FilterSlope::Db24, "24")],
-                    );
-                });
-            });
-            group(ui, |ui| {
-                knob_section(ui, "Amp", |ui| {
-                    ui.add(Knob::new(&p.attack, &setter, "A"));
-                    ui.add(Knob::new(&p.decay, &setter, "D"));
-                    ui.add(Knob::new(&p.sustain, &setter, "S"));
-                    ui.add(Knob::new(&p.release, &setter, "R"));
-                    ui.add(Knob::new(&p.gain, &setter, "Gain"));
-                    ui.add(Knob::new(&p.pan, &setter, "Pan").bipolar());
-                });
-            });
-        });
-
-        // Row 3: modulation, plus the bitcrusher (row 2, where it sits in the sound,
-        // has no room left).
-        row(ui, |ui| {
-            group(ui, |ui| {
-                knob_section(ui, "Mod Envelope", |ui| {
-                    ui.add(Knob::new(&p.mod_env_attack, &setter, "A"));
-                    ui.add(Knob::new(&p.mod_env_decay, &setter, "D"));
-                    ui.add(Knob::new(&p.mod_env_sustain, &setter, "S"));
-                    ui.add(Knob::new(&p.mod_env_release, &setter, "R"));
-                });
-            });
-            group(ui, |ui| {
-                // Only one of Rate / Sync Rate is in charge, so grey out the other.
-                let synced = p.lfo_sync.value();
-                let lfo_shape = p.lfo_shape.value();
-                section_heading(ui, "LFO", |_| {});
-                knob_row(ui, |ui| {
-                    ui.add(Knob::new(&p.lfo_shape, &setter, "Shape"));
-                    knob_wave(ui, |phase| crate::lfo::wave(phase, lfo_shape, KNOB_WAVE_EDGE));
-                    ui.add_enabled(!synced, Knob::new(&p.lfo_rate, &setter, "Rate"));
-                    // Right of centre fades the LFO in on each note, left fades it out.
-                    ui.add(Knob::new(&p.lfo_fade, &setter, "Fade").bipolar());
-                });
-                ui.add_space(6.0);
-                // The sync rate sits right after Sync, since that's what it belongs to.
-                ui.horizontal(|ui| {
-                    toggle_button(ui, "RETRIG", &p.lfo_retrigger, &setter);
-                    toggle_button(ui, "SYNC", &p.lfo_sync, &setter);
-                    ui.add_enabled_ui(synced, |ui| stepper(ui, &p.lfo_division, &setter));
-                });
-            });
-            group(ui, |ui| {
-                // The knobs grey out while Crush is switched off.
-                let crush_on = p.crush_on.value();
-                section_heading(ui, "Crush", |ui| toggle_button(ui, "ON", &p.crush_on, &setter));
-                knob_row(ui, |ui| {
-                    // Bits is a straight line from 1 to 16, so one bit is 1/15 of the way.
-                    ui.add_enabled(crush_on, Knob::new(&p.crush_bits, &setter, "Bits").mod_target(mod_target(armed, &p.mod_slots, 
-                        &routes,
-                        ModDest::CrushBits,
-                        |offset| p.crush_bits.modulated_normalized_value() + offset / 15.0,
-                    )));
-                    // Steps routes are in octaves, like Cutoff.
-                    ui.add_enabled(crush_on, Knob::new(&p.crush_steps, &setter, "Steps").mod_target(mod_target(armed, &p.mod_slots, 
-                        &routes,
-                        ModDest::CrushSteps,
-                        |offset| {
-                            let steps = p.crush_steps.modulated_plain_value() * offset.exp2();
-                            p.crush_steps.preview_normalized(steps)
-                        },
-                    )));
-                    ui.add_enabled(crush_on, Knob::new(&p.crush_mix, &setter, "Mix").mod_target(mod_target(armed, &p.mod_slots, 
-                        &routes,
-                        ModDest::CrushMix,
-                        |offset| p.crush_mix.modulated_normalized_value() + offset,
-                    )));
-                });
-            });
-        });
-
-        // Row 4: the mod matrix. A list of the routes in use, and one editor for the
-        // route picked in the list.
-        row(ui, |ui| {
-            group(ui, |ui| {
-                section_heading(ui, "Mod Matrix", |_| {});
-                mod_matrix(ui, &p.mod_slots, setter);
             });
         });
 
@@ -742,6 +744,135 @@ const MARGIN_X: f32 = 16.0;
 
 /// Space between knobs in a row.
 const KNOB_GAP: f32 = 14.0;
+
+/// The gray of the panel outlines and their titles.
+fn panel_gray(ui: &egui::Ui) -> egui::Color32 {
+    ui.visuals().weak_text_color().gamma_multiply(0.6)
+}
+
+/// How round a panel's corners are, in points.
+const PANEL_RADIUS: f32 = 6.0;
+/// Space inside a panel's outline, around its contents (left/right, and bottom).
+const PANEL_PADDING_X: f32 = 10.0;
+const PANEL_PADDING_BOTTOM: f32 = 8.0;
+/// Extra space below the title, before the contents start.
+const PANEL_TITLE_GAP: f32 = 4.0;
+/// How far the outline stops short of the title on each side.
+const PANEL_TITLE_PADDING: f32 = 6.0;
+/// The title's text size.
+const PANEL_TITLE_SIZE: f32 = 12.5;
+/// How thick the outline is, in points.
+const PANEL_STROKE: f32 = 2.0;
+
+/// A cluster of controls inside a gray rounded outline, with `title` in capitals sitting
+/// on the top edge, centred. The line breaks around the title so it never crosses it.
+fn panel<R>(ui: &mut egui::Ui, title: &str, contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let gray = panel_gray(ui);
+    let font = egui::FontId::proportional(PANEL_TITLE_SIZE);
+    let galley = ui.painter().layout_no_wrap(title.to_uppercase(), font, gray);
+    let title_size = galley.size();
+
+    // Space from whatever's above, plus room for the half of the title that sticks up
+    // above the outline.
+    ui.add_space(PANEL_GAP + title_size.y / 2.0);
+    // Save a spot in the paint order for the outline now, so it draws under the
+    // contents. Its shape is filled in once we know how big the contents are.
+    let outline = ui.painter().add(egui::Shape::Noop);
+
+    let margin = egui::Margin {
+        left: PANEL_PADDING_X as i8,
+        right: PANEL_PADDING_X as i8,
+        top: (title_size.y / 2.0 + PANEL_TITLE_GAP) as i8,
+        bottom: PANEL_PADDING_BOTTOM as i8,
+    };
+    let inner = egui::Frame::new().inner_margin(margin).show(ui, |ui| {
+        // As wide as its column, so a column's panels line up on both sides. And never
+        // narrower than the title plus its gap and the corners.
+        let title_width = title_size.x + 2.0 * (PANEL_TITLE_PADDING + PANEL_RADIUS);
+        ui.set_min_width(ui.available_width().max(title_width));
+        contents(ui)
+    });
+
+    let rect = inner.response.rect;
+    let gap = title_size.x / 2.0 + PANEL_TITLE_PADDING;
+    let points = outline_with_gap(rect, PANEL_RADIUS, rect.center().x - gap, rect.center().x + gap);
+    ui.painter().set(outline, egui::Shape::line(points, egui::Stroke::new(PANEL_STROKE, gray)));
+    let title_pos = egui::pos2(rect.center().x, rect.top()) - title_size / 2.0;
+    ui.painter().galley(title_pos, galley, gray);
+
+    inner.inner
+}
+
+/// The points of a rounded rectangle's outline, going clockwise from `gap_right` on the
+/// top edge all the way round to `gap_left`, so the top edge has a gap between them.
+fn outline_with_gap(rect: egui::Rect, radius: f32, gap_left: f32, gap_right: f32) -> Vec<egui::Pos2> {
+    // Half the line's width in, so the whole line sits inside the panel.
+    let rect = rect.shrink(PANEL_STROKE / 2.0);
+    let (left, right, top, bottom) = (rect.left(), rect.right(), rect.top(), rect.bottom());
+    // Each corner: its centre and the angle its quarter-circle starts at (screen y
+    // points down, so -90° is straight up).
+    let corners = [
+        (egui::pos2(right - radius, top + radius), -90.0_f32),
+        (egui::pos2(right - radius, bottom - radius), 0.0),
+        (egui::pos2(left + radius, bottom - radius), 90.0),
+        (egui::pos2(left + radius, top + radius), 180.0),
+    ];
+    let mut points = vec![egui::pos2(gap_right, top)];
+    for (centre, start) in corners {
+        for step in 0..=CORNER_STEPS {
+            let angle = (start + 90.0 * step as f32 / CORNER_STEPS as f32).to_radians();
+            points.push(centre + radius * egui::vec2(angle.cos(), angle.sin()));
+        }
+    }
+    points.push(egui::pos2(gap_left, top));
+    points
+}
+
+/// Straight pieces per rounded corner. Enough to look round at this size.
+const CORNER_STEPS: usize = 6;
+
+/// Space above each panel (between panels in a column, and below the header).
+const PANEL_GAP: f32 = 10.0;
+
+/// The three columns' widths, and the space between them. The right one is as wide as
+/// the readout above it, so the screen lines up under it.
+const LEFT_COLUMN_WIDTH: f32 = 310.0;
+const MIDDLE_COLUMN_WIDTH: f32 = 290.0;
+const RIGHT_COLUMN_WIDTH: f32 = READOUT_WIDTH;
+const COLUMN_GAP: f32 = 16.0;
+
+/// How tall the screen in the right column is.
+const SCREEN_HEIGHT: f32 = 170.0;
+
+/// One column: a fixed-width stack of panels, top to bottom.
+fn column(ui: &mut egui::Ui, width: f32, contents: impl FnOnce(&mut egui::Ui)) {
+    ui.vertical(|ui| {
+        ui.set_width(width);
+        // Back to normal spacing inside (the row of columns widened it).
+        ui.spacing_mut().item_spacing.x = 8.0;
+        contents(ui);
+    });
+}
+
+/// An on/off button at the end of a row of knobs, level with the knobs' circles.
+fn row_toggle(ui: &mut egui::Ui, label: &str, param: &BoolParam, setter: &ParamSetter) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), KNOB_WAVE_SIZE),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| toggle_button(ui, label, param, setter),
+    );
+}
+
+/// A small muted label naming a part of a panel, like "LFO" inside Modulation.
+fn sub_label(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(6.0);
+    ui.label(
+        egui::RichText::new(text.to_uppercase())
+            .size(PANEL_TITLE_SIZE - 1.0)
+            .color(panel_gray(ui)),
+    );
+    ui.add_space(2.0);
+}
 
 /// A titled block: a bold title, then its knobs side by side.
 fn knob_section(ui: &mut egui::Ui, title: &str, knobs: impl FnOnce(&mut egui::Ui)) {
