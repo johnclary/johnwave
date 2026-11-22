@@ -5,6 +5,7 @@
 //! This is window-only state: it remembers what the screen showed, not anything about
 //! the sound.
 
+use crate::screen::ScreenWave;
 use std::collections::VecDeque;
 
 /// How long a ghost takes to fade away completely, in seconds.
@@ -16,8 +17,7 @@ const STEP: f64 = 1.0 / 30.0;
 pub struct Ghost {
     /// When it was shown, in seconds (egui's clock).
     time: f64,
-    pub morph: f32,
-    pub level: f32,
+    pub wave: ScreenWave,
 }
 
 #[derive(Default)]
@@ -28,28 +28,25 @@ pub struct Trail {
 }
 
 impl Trail {
-    /// Call once per frame with the time and what the screen shows now (`morph` is NaN
-    /// when nothing is playing).
-    pub fn update(&mut self, now: f64, morph: f32, level: f32) {
+    /// Call once per frame with the time and what the screen shows now (`None` when
+    /// nothing is playing).
+    pub fn update(&mut self, now: f64, wave: Option<ScreenWave>) {
         // Drop ghosts that have fully faded. They're oldest first, so look at the front.
         while self.ghosts.front().is_some_and(|g| now - g.time >= LIFETIME) {
             self.ghosts.pop_front();
         }
         // Silent: add nothing, and let the ones already there fade out.
-        if morph.is_nan() {
+        let Some(wave) = wave else {
             return;
-        }
+        };
         // Only add a ghost when the shape has visibly moved, so a steady note shows just
         // the one clean wave.
         let add = match self.ghosts.back() {
             None => true,
-            Some(last) => {
-                let moved = (last.morph - morph).abs() > 0.002 || (last.level - level).abs() > 0.005;
-                moved && now - last.time >= STEP
-            }
+            Some(last) => last.wave.moved(&wave) && now - last.time >= STEP,
         };
         if add {
-            self.ghosts.push_back(Ghost { time: now, morph, level });
+            self.ghosts.push_back(Ghost { time: now, wave });
         }
     }
 

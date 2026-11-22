@@ -9,13 +9,14 @@ use crate::filter::{FilterSlope, FilterType};
 use crate::knob::Knob;
 use crate::knob::ModTarget;
 use crate::modulation::{mod_offset, mod_span, LiveSources, ModDest, ModSlotParams, ModSource, Routes, SlotDest, SlotSource};
+use crate::screen::{ScreenWave, SharedScreen};
 use crate::trail::Trail;
 use crate::{SynthParams, VoiceMode};
 use nice_plug::context::gui::GuiContext;
 use nice_plug::editor::dpi::LogicalSize;
-use nice_plug::prelude::{AtomicF32, BoolParam, Enum, EnumParam, Param, ParamSetter};
-use std::sync::atomic::Ordering;
+use nice_plug::prelude::{BoolParam, Enum, EnumParam, Param, ParamSetter};
 use nice_plug_egui::{EguiEditorState, Frame, NiceEguiApp, RepaintNotifier};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 /// Window size in points. On a Retina screen egui draws at twice this many pixels.
@@ -35,12 +36,10 @@ pub struct JohnwaveEditor {
     /// How the window talks to the host (to change parameters, with undo and automation).
     /// It only exists while the window is open, so it starts as `None`.
     gui_context: Option<GuiContext>,
-    /// The Shape being played right now (including LFO and Mod Env), set by the audio
-    /// thread. The oscillator display draws this.
-    display_morph: Arc<AtomicF32>,
-    /// How loud that voice is right now (0..1), set by the audio thread. The display
-    /// draws the wave this tall, so it swells and fades with the amp envelope.
-    display_level: Arc<AtomicF32>,
+    /// What the newest voice's oscillators are playing right now (Shapes including LFO
+    /// and Mod Env, Osc 2's tuning and mix, and how loud it is), set by the audio thread.
+    /// The oscillator screen draws this, so it swells and fades with the amp envelope.
+    display: Arc<SharedScreen>,
     /// The newest voice's mod source values, set by the audio thread, for the live tick.
     live_sources: Arc<LiveSources>,
     /// Asks the host for another frame. `ctx.request_repaint()` doesn't get through in
@@ -54,16 +53,14 @@ pub struct JohnwaveEditor {
 impl JohnwaveEditor {
     pub fn new(
         params: Arc<SynthParams>,
-        display_morph: Arc<AtomicF32>,
-        display_level: Arc<AtomicF32>,
+        display: Arc<SharedScreen>,
         live_sources: Arc<LiveSources>,
         repaint: RepaintNotifier,
     ) -> Self {
         Self {
             params,
             gui_context: None,
-            display_morph,
-            display_level,
+            display,
             live_sources,
             repaint,
             trail: Trail::default(),
@@ -100,9 +97,7 @@ impl NiceEguiApp for JohnwaveEditor {
         // still fading, ask for another frame so it keeps fading even if nothing else
         // changes.
         let now = ui.input(|i| i.time);
-        let morph = self.display_morph.load(Ordering::Relaxed);
-        let level = self.display_level.load(Ordering::Relaxed);
-        self.trail.update(now, morph, level);
+        self.trail.update(now, self.display.load());
         if self.trail.is_fading() {
             self.repaint.request_repaint();
         }
@@ -322,13 +317,16 @@ impl JohnwaveEditor {
                 });
             });
 
-            // Right column: the screen, then the effects-ish extras.
+            // Right column: the scope, then the effects-ish extras.
             column(ui, RIGHT_COLUMN_WIDTH, |ui| {
-                // Down by half a panel title, so its top lines up with the outlines.
-                ui.add_space(PANEL_GAP + PANEL_TITLE_SIZE / 2.0);
-                let morph = self.display_morph.load(Ordering::Relaxed);
-                let level = self.display_level.load(Ordering::Relaxed);
-                osc_display(ui, morph, level, &self.trail, SCREEN_HEIGHT);
+                // The screen sits in a panel of its own, with a tight bezel, like a
+                // monitor in its housing. It's shorter by whatever the title and bezel
+                // take, so the column stays the same height.
+                let title_height = panel_title(ui, "Scope").size().y;
+                let height = SCOPE_HEIGHT - title_height - SCOPE_BEZEL;
+                panel_with(ui, "Scope", SCOPE_BEZEL, SCOPE_BEZEL, 0.0, |ui| {
+                    osc_display(ui, p, self.display.load(), &self.trail, height);
+                });
 
                 panel(ui, "Unison", |ui| {
                     // The knobs grey out while Unison is switched off.
@@ -517,11 +515,13 @@ pub fn mod_pink() -> egui::Color32 {
 const READOUT_WIDTH: f32 = 240.0;
 const READOUT_HEIGHT: f32 = 30.0;
 
-/// What the oscillator is playing right now, in a wide "screen" under the readout. It uses the
-/// same `osc::shape` function the sound comes from, so it shows the real shape and its
-/// real level (the square looks smaller because it's scaled to sound as loud as the others).
-fn osc_display(ui: &mut egui::Ui, morph: f32, level: f32, trail: &Trail, height: f32) {
-    let size = egui::vec2(READOUT_WIDTH, height);
+/// What the oscillators are playing right now, in a wide "screen" under the readout. It
+/// uses the same `osc::shape` function the sound comes from, so it shows the real shapes
+/// and their real level (the square looks smaller because it's scaled to sound as loud as
+/// the others). `wave` is `None` when nothing is playing. Chips along the top switch
+/// each line on and off.
+fn osc_display(ui: &mut egui::Ui, p: &SynthParams, wave: Option<ScreenWave>, trail: &Trail, height: f32) {
+    let size = egui::vec2(ui.available_width(), height);
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     let mut painter = ui.painter_at(rect);
     // Faded in mod mode, like everything else that isn't a mod target.
@@ -529,33 +529,109 @@ fn osc_display(ui: &mut egui::Ui, morph: f32, level: f32, trail: &Trail, height:
         painter.multiply_opacity(MOD_MODE_FADE);
     }
     let faint = ui.visuals().weak_text_color().gamma_multiply(0.5);
-
     screen_frame(&painter, rect, faint);
-    // A faint centre line at 0.
+
+    // The chips across the top, inside the frame, and the waves in the space below.
     let inner = rect.shrink(SCREEN_PADDING);
+    let (chip_row, waves) = inner.split_top_bottom_at_y(inner.top() + SCREEN_CHIP_ROW);
+    screen_chips(ui, chip_row, p);
+    let show = |flag: &AtomicBool| flag.load(Ordering::Relaxed);
+    let (show1, show2, show_mix) = (show(&p.screen_osc1), show(&p.screen_osc2), show(&p.screen_mix));
+
+    // A faint centre line at 0.
     painter.line_segment(
-        [inner.left_center(), inner.right_center()],
+        [waves.left_center(), waves.right_center()],
         egui::Stroke::new(1.0, faint.gamma_multiply(0.6)),
     );
 
-    // The trail first, so the main wave draws on top. Each ghost keeps its own colour
-    // and gets fainter as it ages (squared, so it fades quickly at first, then lingers).
-    let now = ui.input(|i| i.time);
-    for (ghost, fade) in trail.ghosts(now) {
-        let wave = |phase| crate::osc::shape(phase, 0.0, ghost.morph) * ghost.level;
-        let color = neon_color(ghost.morph).gamma_multiply(TRAIL_STRENGTH * fade * fade);
-        wave_line(&painter, inner, SCREEN_CYCLES, wave, color, 1.0);
+    // The trail first, so the main wave draws on top. Each ghost is just the mix, in
+    // its own colour, and gets fainter as it ages (squared, so it fades quickly at
+    // first, then lingers).
+    if show_mix {
+        let now = ui.input(|i| i.time);
+        for (ghost, fade) in trail.ghosts(now) {
+            let w = ghost.wave;
+            let color = neon_color(w.morph).gamma_multiply(TRAIL_STRENGTH * fade * fade);
+            screen_line(&painter, waves, |x| w.mix(x), color, 1.0);
+        }
     }
 
-    // Nothing playing (NaN): leave just the centre line (and any trail still fading),
-    // so it doesn't show a sound that isn't there.
-    if morph.is_nan() {
+    // Nothing playing: leave just the centre line (and any trail still fading), so it
+    // doesn't show a sound that isn't there.
+    let Some(w) = wave else {
         return;
+    };
+    // Everything in Osc 1's colour: thickness and brightness tell the lines apart.
+    let color = neon_color(w.morph);
+    // Each oscillator at its share of the mix and the voice's level. Behind the mix they're
+    // thin and faint. On their own they're drawn brighter, so they're easy to follow.
+    let (part_color, part_width) = if show_mix {
+        (color.gamma_multiply(COMPONENT_STRENGTH), 1.0)
+    } else {
+        (color, 1.5)
+    };
+    // Without Osc 2, Osc 1 alone *is* the mix, so it's only drawn when the mix isn't.
+    if show1 && (w.has_osc2() || !show_mix) {
+        screen_line(&painter, waves, |x| w.osc1(x) * w.gain1 * w.level, part_color, part_width);
     }
-    // Scaled by the level, so the wave swells on attack and shrinks away on release.
-    let wave = |phase| crate::osc::shape(phase, 0.0, morph) * level;
-    wave_line(&painter, inner, SCREEN_CYCLES, wave, neon_color(morph), 2.0);
+    if show2 && w.has_osc2() {
+        screen_line(&painter, waves, |x| w.osc2(x) * w.gain2 * w.level, part_color, part_width);
+    }
+    // Then the two added up, bold on top. Scaled by the level, so it swells on attack
+    // and shrinks away on release.
+    if show_mix {
+        screen_line(&painter, waves, |x| w.mix(x), color, 2.0);
+    }
 }
+
+/// The `OSC 1  OSC 2  MIX` chips along the top of the screen. Each switches its line on
+/// and off. Osc 2's greys out while Osc 2 is switched off. They're window settings, not
+/// sound, so they're saved with the patch but aren't parameters.
+fn screen_chips(ui: &mut egui::Ui, row: egui::Rect, p: &SynthParams) {
+    let mut chips = ui.new_child(egui::UiBuilder::new().max_rect(row));
+    // Like the other buttons, they fade and stop taking clicks in mod mode.
+    chips.add_enabled_ui(!in_mod_mode(ui), |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.spacing_mut().button_padding = egui::vec2(4.0, 0.0);
+            cyan_selection(ui);
+            screen_chip(ui, "OSC 1", &p.screen_osc1, true);
+            screen_chip(ui, "OSC 2", &p.screen_osc2, p.osc2_on.value());
+            screen_chip(ui, "MIX", &p.screen_mix, true);
+        });
+    });
+}
+
+fn screen_chip(ui: &mut egui::Ui, label: &str, flag: &AtomicBool, enabled: bool) {
+    let on = flag.load(Ordering::Relaxed);
+    let text = egui::RichText::new(label).size(SCREEN_CHIP_TEXT);
+    let response = ui.add_enabled(enabled, egui::Button::selectable(on, text));
+    if !on {
+        chip_outline(ui, &response, None);
+    }
+    if response.clicked() {
+        flag.store(!on, Ordering::Relaxed);
+    }
+}
+
+/// How tall the strip of chips at the top of the screen is, and their text size.
+const SCREEN_CHIP_ROW: f32 = 20.0;
+const SCREEN_CHIP_TEXT: f32 = 10.0;
+
+/// One line on the oscillator screen. `wave` takes how many cycles of Osc 1 from the
+/// left edge and gives -1..1.
+fn screen_line(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    wave: impl Fn(f32) -> f32,
+    color: egui::Color32,
+    thickness: f32,
+) {
+    neon_line(painter, rect, |x| wave(x * SCREEN_CYCLES), color, thickness);
+}
+
+/// How bright the thin Osc 1 and Osc 2 lines are, behind the bold mix.
+const COMPONENT_STRENGTH: f32 = 0.5;
 
 /// How bright the newest ghost in the trail is, compared with the main wave.
 const TRAIL_STRENGTH: f32 = 0.5;
@@ -589,13 +665,25 @@ fn knob_wave(ui: &mut egui::Ui, wave: impl Fn(f32) -> f32) {
     wave_line(&painter, rect, 1.0, wave, cyan(), 2.0);
 }
 
-/// Draw `wave` (phase 0..1 in, -1..1 out) across `rect` as a neon line `thickness` wide.
-/// Shared by the oscillator screen and the knob waves so they look alike.
+/// Draw `cycles` cycles of `wave` (phase 0..1 in, -1..1 out) across `rect` as a neon
+/// line `thickness` wide.
 fn wave_line(
     painter: &egui::Painter,
     rect: egui::Rect,
     cycles: f32,
     wave: impl Fn(f32) -> f32,
+    color: egui::Color32,
+    thickness: f32,
+) {
+    neon_line(painter, rect, |x| wave((x * cycles).fract()), color, thickness);
+}
+
+/// Draw `curve` (0..1 across `rect` in, -1..1 out) as a neon line `thickness` wide.
+/// Shared by the oscillator screen and the knob waves so they look alike.
+fn neon_line(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    curve: impl Fn(f32) -> f32,
     color: egui::Color32,
     thickness: f32,
 ) {
@@ -609,8 +697,7 @@ fn wave_line(
     let points: Vec<egui::Pos2> = (0..=steps)
         .map(|i| {
             let x = i as f32 / steps as f32;
-            let phase = (x * cycles).fract();
-            let y = wave(phase);
+            let y = curve(x);
             egui::pos2(rect.left() + x * rect.width(), rect.center().y - y * half_height)
         })
         .collect();
@@ -706,9 +793,27 @@ const PANEL_STROKE: f32 = 2.0;
 /// A cluster of controls inside a gray rounded outline, with `title` in capitals sitting
 /// on the top edge, centred. The line breaks around the title so it never crosses it.
 fn panel<R>(ui: &mut egui::Ui, title: &str, contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    let gray = panel_gray(ui);
+    panel_with(ui, title, PANEL_PADDING_X, PANEL_PADDING_BOTTOM, PANEL_TITLE_GAP, contents)
+}
+
+/// A panel's title, laid out ready to draw.
+fn panel_title(ui: &egui::Ui, title: &str) -> std::sync::Arc<egui::Galley> {
     let font = egui::FontId::proportional(PANEL_TITLE_SIZE);
-    let galley = ui.painter().layout_no_wrap(title.to_uppercase(), font, gray);
+    ui.painter().layout_no_wrap(title.to_uppercase(), font, panel_gray(ui))
+}
+
+/// A `panel` with its own spacing inside the outline: `sides`, `bottom`, and `title_gap`
+/// extra below the title.
+fn panel_with<R>(
+    ui: &mut egui::Ui,
+    title: &str,
+    sides: f32,
+    bottom: f32,
+    title_gap: f32,
+    contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let gray = panel_gray(ui);
+    let galley = panel_title(ui, title);
     let title_size = galley.size();
 
     // Space from whatever's above, plus room for the half of the title that sticks up
@@ -719,10 +824,10 @@ fn panel<R>(ui: &mut egui::Ui, title: &str, contents: impl FnOnce(&mut egui::Ui)
     let outline = ui.painter().add(egui::Shape::Noop);
 
     let margin = egui::Margin {
-        left: PANEL_PADDING_X as i8,
-        right: PANEL_PADDING_X as i8,
-        top: (title_size.y / 2.0 + PANEL_TITLE_GAP) as i8,
-        bottom: PANEL_PADDING_BOTTOM as i8,
+        left: sides as i8,
+        right: sides as i8,
+        top: (title_size.y / 2.0 + title_gap) as i8,
+        bottom: bottom as i8,
     };
     let inner = egui::Frame::new().inner_margin(margin).show(ui, |ui| {
         // As wide as its column, so a column's panels line up on both sides. And never
@@ -780,8 +885,11 @@ const MIDDLE_COLUMN_WIDTH: f32 = 290.0;
 const RIGHT_COLUMN_WIDTH: f32 = READOUT_WIDTH;
 const COLUMN_GAP: f32 = 16.0;
 
-/// How tall the screen in the right column is.
-const SCREEN_HEIGHT: f32 = 170.0;
+/// How tall the Scope panel is, outline included: what the bare screen and the space
+/// above it took before it had a panel, so the column below didn't move.
+const SCOPE_HEIGHT: f32 = 170.0 + PANEL_TITLE_SIZE / 2.0;
+/// The gap between the Scope's outline and its screen, at the sides and bottom.
+const SCOPE_BEZEL: f32 = 5.0;
 
 /// One column: a fixed-width stack of panels, top to bottom.
 fn column(ui: &mut egui::Ui, width: f32, contents: impl FnOnce(&mut egui::Ui)) {

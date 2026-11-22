@@ -1,6 +1,6 @@
 use nice_plug::prelude::*;
 use std::collections::BTreeMap;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 mod crush;
@@ -13,6 +13,7 @@ mod modulation;
 mod notes;
 mod osc;
 mod readout;
+mod screen;
 mod trail;
 mod unison;
 mod voice;
@@ -22,6 +23,7 @@ use lfo::{Lfo, SyncDivision};
 use modulation::{enum_id, LiveSources, ModSlotParams, Routes, SlotDest, SlotSource, MATRIX_SLOTS};
 use nice_plug::plugin::ParamValue;
 use notes::NoteStack;
+use screen::SharedScreen;
 use voice::{Porta, VoiceParams, VoicePool};
 use editor::JohnwaveEditor;
 use nice_plug_egui::{EguiEditor, EguiEditorState, EguiNiceSettings, RepaintNotifier};
@@ -48,12 +50,9 @@ pub struct Johnwave {
     osc2_fade: SwitchFade,
     /// The plugin window's size and whether it's open.
     editor_state: Arc<EguiEditorState>,
-    /// The Morph the window's waveform shows, or NaN when nothing is playing. The audio
-    /// thread writes it and the window reads it. An atomic number can be shared like this
-    /// safely without locking.
-    display_morph: Arc<AtomicF32>,
-    /// How loud that voice is (0..1). The waveform is drawn this tall.
-    display_level: Arc<AtomicF32>,
+    /// What the window's screen shows: the newest voice's oscillators, or nothing when
+    /// silent. The audio thread writes it and the window reads it (see `screen.rs`).
+    display: Arc<SharedScreen>,
     /// The newest voice's mod source values, for mod mode's live tick.
     live_sources: Arc<LiveSources>,
     /// Lets the audio thread tell the window to redraw (the waveform moved).
@@ -206,6 +205,16 @@ pub struct SynthParams {
     /// `nested(array)` saves slot 1 as `mod_src_1`, `mod_dst_1`, `mod_amt_1`, and so on.
     #[nested(array, group = "Mod Matrix")]
     pub mod_slots: [ModSlotParams; MATRIX_SLOTS],
+
+    // Which lines the oscillator screen shows, from its chips. These are saved with the
+    // patch but aren't parameters: the DAW doesn't list them and they can't be
+    // automated. An atomic bool can be shared between threads without locking.
+    #[persist = "screen_osc1"]
+    pub screen_osc1: Arc<AtomicBool>,
+    #[persist = "screen_osc2"]
+    pub screen_osc2: Arc<AtomicBool>,
+    #[persist = "screen_mix"]
+    pub screen_mix: Arc<AtomicBool>,
 }
 
 /// An envelope time knob in milliseconds. It's skewed so the short times get more
@@ -491,6 +500,11 @@ impl Default for SynthParams {
 
             // `from_fn` builds the array by calling this once per slot (i = 0, 1, ...).
             mod_slots: std::array::from_fn(|i| ModSlotParams::new(i + 1)),
+
+            // Everything showing to start with.
+            screen_osc1: Arc::new(AtomicBool::new(true)),
+            screen_osc2: Arc::new(AtomicBool::new(true)),
+            screen_mix: Arc::new(AtomicBool::new(true)),
         }
     }
 }
@@ -663,8 +677,7 @@ impl Default for Johnwave {
             crush_fade: SwitchFade::default(),
             osc2_fade: SwitchFade::default(),
             editor_state: editor::default_state(),
-            display_morph: Arc::new(AtomicF32::new(f32::NAN)),
-            display_level: Arc::new(AtomicF32::new(0.0)),
+            display: Arc::new(SharedScreen::default()),
             live_sources: Arc::new(LiveSources::default()),
             repaint: RepaintNotifier::new(),
         }
@@ -745,29 +758,24 @@ impl Johnwave {
         division.rate_hz(bpm, bar_beats)
     }
 
-    /// Once per block: pass the Morph and level currently being played to the window, and
-    /// ask it to redraw if the wave visibly changed. Skipped while the window is closed.
+    /// Once per block: pass what's being played to the window's screen, and ask it to
+    /// redraw if the waves visibly changed. Skipped while the window is closed.
     fn update_display(&self) {
         if !self.editor_state.is_open() {
             return;
         }
-        // NaN ("not a number") is the signal for "nothing is playing": the screen goes flat.
         let newest = self.voices.newest_display();
         // The live tick's values go across every block. The window asks for its own
         // redraws while it's showing them, so no repaint request is needed here.
-        self.live_sources.store(newest.map(|(_, _, sources)| sources));
-        let (morph, level) = newest.map_or((f32::NAN, 0.0), |(m, l, _)| (m, l));
-        let shown = self.display_morph.load(Ordering::Relaxed);
-        let shown_level = self.display_level.load(Ordering::Relaxed);
-        // NaN never equals anything, so check "silent vs. playing" before comparing values.
-        let changed = if morph.is_nan() || shown.is_nan() {
-            morph.is_nan() != shown.is_nan()
-        } else {
-            (morph - shown).abs() > 0.002 || (level - shown_level).abs() > 0.005
+        self.live_sources.store(newest.map(|(_, sources)| sources));
+        let wave = newest.map(|(wave, _)| wave);
+        let changed = match (wave, self.display.load()) {
+            (Some(now), Some(shown)) => now.moved(&shown),
+            // Started or stopped playing.
+            (now, shown) => now.is_some() != shown.is_some(),
         };
         if changed {
-            self.display_morph.store(morph, Ordering::Relaxed);
-            self.display_level.store(level, Ordering::Relaxed);
+            self.display.store(wave);
             self.repaint.request_repaint();
         }
     }
@@ -842,8 +850,7 @@ impl Plugin for Johnwave {
             EguiNiceSettings::new().with_tile("johnwave"),
             JohnwaveEditor::new(
                 self.params.clone(),
-                self.display_morph.clone(),
-                self.display_level.clone(),
+                self.display.clone(),
                 self.live_sources.clone(),
                 self.repaint.clone(),
             ),

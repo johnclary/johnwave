@@ -14,6 +14,7 @@ use crate::filter::{Filter, FilterSlope, FilterType};
 use crate::lfo::{Lfo, LfoOut};
 use crate::modulation::{self, ModSources, Routes};
 use crate::osc::MorphOsc;
+use crate::screen::ScreenWave;
 use crate::unison::{self, MAX_VOICES as MAX_COPIES};
 use nice_plug::prelude::{Smoother, SmoothingStyle};
 use nice_plug::util;
@@ -133,11 +134,10 @@ pub struct Voice {
     /// Seconds since this note started, for the LFO Fade. Stops counting at the
     /// longest fade, since nothing changes after that.
     since_start_s: f32,
-    /// Morph after modulation, from the latest sample. Read by the plugin window.
-    morph: f32,
-    /// How loud this voice is right now (amp envelope times velocity, 0..1), from the
-    /// latest sample. Read by the plugin window.
-    level: f32,
+    /// What the window's screen shows for this voice (both Shapes after modulation, Osc
+    /// 2's tuning and mix, and the level), from the latest sample. `screen.level` is also
+    /// the amp envelope times velocity that the voice is scaled by.
+    screen: ScreenWave,
     /// The modulation sources from the latest sample. Read by the window's live tick.
     sources: ModSources,
 }
@@ -162,8 +162,7 @@ impl Default for Voice {
             mod_env: Adsr::default(),
             lfo: Lfo::default(),
             since_start_s: 0.0,
-            level: 0.0,
-            morph: 0.0,
+            screen: ScreenWave::default(),
             sources: ModSources::default(),
         }
     }
@@ -325,7 +324,7 @@ impl Voice {
         // turn into a frequency multiplier: +12 st or +1 oct doubles, −1 oct halves.
         // The oscillator clamps morph to 0..=1 and the filter clamps resonance.
         let freq = self.freq * ((p.pitch_st + off.pitch_st) / 12.0).exp2();
-        self.morph = (p.morph + off.morph).clamp(0.0, 1.0);
+        let morph = (p.morph + off.morph).clamp(0.0, 1.0);
 
         // Osc 2 is tuned relative to osc 1, so bend, Coarse, Fine and Pitch routes move
         // both together. With the switch fully off it isn't run at all.
@@ -354,7 +353,7 @@ impl Voice {
             } else {
                 freq * (detune_ct * unison::position(i, copies) / 1200.0).exp2()
             };
-            let mut s = self.osc1[i].next(copy_freq, sample_rate, self.morph);
+            let mut s = self.osc1[i].next(copy_freq, sample_rate, morph);
             if osc2_on {
                 s = s * gain1 + self.osc2[i].next(copy_freq * ratio2, sample_rate, morph2) * gain2;
             }
@@ -381,7 +380,7 @@ impl Voice {
         let drive = p.filter_drive + off.drive;
 
         let amp = self.amp_env.next(&p.amp_env, sample_rate);
-        self.level = amp * velocity;
+        self.screen = ScreenWave { morph, level: amp * velocity, morph2, ratio2, gain1, gain2 };
 
         // Each side gets its own crusher and filter. Fed the same signal (one copy, or
         // Width at 0) they come out identical.
@@ -400,7 +399,7 @@ impl Voice {
                 drive,
                 sample_rate,
             );
-            *x *= self.level;
+            *x *= self.screen.level;
         }
         (sides[0], sides[1])
     }
@@ -482,14 +481,14 @@ impl VoicePool {
         self.last_note = None;
     }
 
-    /// The modulated Morph, the level and the mod sources of the most recently started
-    /// voice that's still sounding, or `None` when nothing is playing.
-    pub fn newest_display(&self) -> Option<(f32, f32, ModSources)> {
+    /// What the screen shows and the mod sources of the most recently started voice
+    /// that's still sounding, or `None` when nothing is playing.
+    pub fn newest_display(&self) -> Option<(ScreenWave, ModSources)> {
         self.voices
             .iter()
             .filter(|v| v.is_active())
             .max_by_key(|v| v.age)
-            .map(|v| (v.morph, v.level, v.sources))
+            .map(|v| (v.screen, v.sources))
     }
 
     /// The single voice used in mono mode.
@@ -837,6 +836,23 @@ mod tests {
                 assert!((a - b).abs() > 1e-3, "repeated phase {a} in {phases:?}");
             }
         }
+    }
+
+    #[test]
+    fn screen_shows_osc2() {
+        let screen = |p: &VoiceParams| {
+            let mut pool = VoicePool::default();
+            on(&mut pool, 57);
+            pool.next(p, SR);
+            pool.newest_display().expect("a note is playing").0
+        };
+        // Off: the screen is osc 1 alone.
+        let off = screen(&PARAMS);
+        assert_eq!((off.gain1, off.gain2), (1.0, 0.0));
+        // On and an octave up: twice the frequency, and half each in the mix.
+        let up = screen(&VoiceParams { osc2_pitch_st: 12.0, osc_mix: 0.5, ..OSC2_ONLY });
+        assert!((up.ratio2 - 2.0).abs() < 1e-5, "{}", up.ratio2);
+        assert!((up.gain1 - up.gain2).abs() < 1e-5 && up.gain2 > 0.0);
     }
 
     #[test]
