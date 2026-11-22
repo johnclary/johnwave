@@ -288,7 +288,7 @@ impl JohnwaveEditor {
                 // LFO just below, so they share one panel.
                 panel(ui, "Modulation", |ui| {
                     sub_label(ui, "Source Select");
-                    mod_chips(ui);
+                    mod_chips(ui, &p.mod_slots);
 
                     sub_label(ui, "Mod Env");
                     knob_row(ui, |ui| {
@@ -432,7 +432,10 @@ fn set_armed(ui: &egui::Ui, source: Option<ModSource>) {
 /// The mod mode chips: `LFO ENV VEL RAND`. Click one to arm it, and every knob shows
 /// just what that source does; drag a knob to set its amount. Click it again, or press
 /// Esc, to leave mod mode.
-fn mod_chips(ui: &mut egui::Ui) {
+///
+/// A chip has three looks: plain (like the other buttons) when the source goes nowhere,
+/// dim pink when it's routed to at least one knob, and lit pink while it's armed.
+fn mod_chips(ui: &mut egui::Ui, slots: &[ModSlotParams]) {
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         set_armed(ui, None);
     }
@@ -447,13 +450,24 @@ fn mod_chips(ui: &mut egui::Ui) {
         ] {
             let color = mod_pink();
             let on = armed == Some(source);
+            let routed = is_routed(slots, source);
             let response = ui
                 .scope(|ui| {
                     let selection = &mut ui.visuals_mut().selection;
                     selection.bg_fill = color.gamma_multiply(0.3);
                     selection.stroke.color = color;
-                    let text = egui::RichText::new(label).color(if on { color } else { color.gamma_multiply(0.75) });
-                    ui.selectable_label(on, text)
+                    let dim = color.gamma_multiply(0.75);
+                    let mut text = egui::RichText::new(label);
+                    if on {
+                        text = text.color(color);
+                    } else if routed {
+                        text = text.color(dim);
+                    }
+                    let response = ui.selectable_label(on, text);
+                    if !on {
+                        chip_outline(ui, &response, routed.then_some(dim));
+                    }
+                    response
                 })
                 .inner
                 .on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -465,6 +479,14 @@ fn mod_chips(ui: &mut egui::Ui) {
             crate::readout::report_text(ui, &format!("{name} mod"), hint, &response);
         }
     });
+}
+
+/// True if any mod slot sends `source` somewhere with a non-zero amount.
+fn is_routed(slots: &[ModSlotParams], source: ModSource) -> bool {
+    let wanted = SlotSource::of(source);
+    slots
+        .iter()
+        .any(|s| s.source.value() == wanted && s.dest.value() != SlotDest::Off && s.amount.value() != 0.0)
 }
 
 /// The mod colour: a dusky pink, far enough round the colour wheel from the cyan to
@@ -792,12 +814,25 @@ fn toggle_button(ui: &mut egui::Ui, label: &str, param: &BoolParam, setter: &Par
     let clicked = ui
         .scope(|ui| {
             cyan_selection(ui);
-            ui.selectable_label(on, label).clicked()
+            let response = ui.selectable_label(on, label);
+            if !on {
+                chip_outline(ui, &response, None);
+            }
+            response.clicked()
         })
         .inner;
     if clicked {
         set(setter, param, !on);
     }
+}
+
+/// A faint outline around an unselected chip, so it reads as a button and not a floating
+/// label. egui only draws a selectable's frame while it's hovered or selected, so this
+/// paints one on top. `color: None` uses the gray of the `switch` frame.
+fn chip_outline(ui: &egui::Ui, response: &egui::Response, color: Option<egui::Color32>) {
+    let color = color.unwrap_or_else(|| ui.visuals().weak_text_color().gamma_multiply(0.5));
+    let radius = ui.visuals().widgets.inactive.corner_radius;
+    ui.painter().rect_stroke(response.rect, radius, egui::Stroke::new(1.0, color), egui::StrokeKind::Inside);
 }
 
 /// Make "selected" buttons in this `ui` a dim cyan fill with bright cyan text, to match
