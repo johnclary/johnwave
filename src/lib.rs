@@ -18,7 +18,7 @@ mod trail;
 mod unison;
 mod voice;
 use env::AdsrSettings;
-use filter::FilterType;
+use filter::{FilterSlope, FilterType};
 use lfo::{Lfo, SyncDivision};
 use modulation::{enum_id, LiveSources, ModSlotParams, Routes, SlotDest, SlotSource, MATRIX_SLOTS};
 use nice_plug::plugin::ParamValue;
@@ -125,12 +125,18 @@ pub struct SynthParams {
     /// Which part of the sound the filter keeps (low-pass, high-pass, ...).
     #[id = "filter_type"]
     pub filter_type: EnumParam<FilterType>,
+    /// 12 dB/octave (one stage) or 24 dB/octave (two, steeper).
+    #[id = "filter_slope"]
+    pub filter_slope: EnumParam<FilterSlope>,
     /// Filter cutoff in Hz.
     #[id = "cutoff"]
     pub cutoff: FloatParam,
     /// Peak at the cutoff: 0 = none, 1 = strong ringing (stops short of self-oscillation).
     #[id = "resonance"]
     pub resonance: FloatParam,
+    /// How hard the sound is pushed into the filter: 0 = clean, 1 = thick and gritty.
+    #[id = "filter_drive"]
+    pub filter_drive: FloatParam,
 
     // Bitcrusher, applied in each voice before the filter (see `crush.rs`).
     /// The on/off switch. While off, the knobs (and routes to them) do nothing.
@@ -339,7 +345,15 @@ impl Default for SynthParams {
             .with_value_to_string(formatters::v2s_f32_hz_then_khz(0))
             .with_string_to_value(formatters::s2v_f32_hz_then_khz()),
             filter_type: EnumParam::new("Filter Type", FilterType::LowPass),
+            // 12 dB by default, so older patches sound the same.
+            filter_slope: EnumParam::new("Filter Slope", FilterSlope::Db12),
             resonance: FloatParam::new("Resonance", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 })
+                .with_smoother(SmoothingStyle::Linear(20.0))
+                .with_unit("%")
+                .with_value_to_string(formatters::v2s_f32_percentage(0))
+                .with_string_to_value(formatters::s2v_f32_percentage()),
+            // Off by default, so older patches sound the same.
+            filter_drive: FloatParam::new("Drive", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 })
                 .with_smoother(SmoothingStyle::Linear(20.0))
                 .with_unit("%")
                 .with_value_to_string(formatters::v2s_f32_percentage(0))
@@ -861,8 +875,10 @@ impl Plugin for Johnwave {
                     self.params.fine.smoothed.next(),
                 ),
                 filter_type: self.params.filter_type.value(),
+                filter_slope: self.params.filter_slope.value(),
                 cutoff_hz: self.params.cutoff.smoothed.next(),
                 resonance: self.params.resonance.smoothed.next(),
+                filter_drive: self.params.filter_drive.smoothed.next(),
                 crush_amount: self.crush_fade.next(),
                 crush_bits: self.params.crush_bits.smoothed.next(),
                 crush_steps: self.params.crush_steps.smoothed.next(),

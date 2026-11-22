@@ -5,7 +5,7 @@
 //! no widget tree to keep in sync. The window only reads and sets parameters. No sound
 //! logic lives here.
 
-use crate::filter::FilterType;
+use crate::filter::{FilterSlope, FilterType};
 use crate::knob::Knob;
 use crate::slider::Slider;
 use crate::knob::ModTarget;
@@ -271,20 +271,33 @@ impl JohnwaveEditor {
                         ModDest::Resonance,
                         |offset| p.resonance.modulated_normalized_value() + offset,
                     )));
+                    ui.add(Knob::new(&p.filter_drive, &setter, "Drive").mod_target(mod_target(armed, &p.mod_slots, 
+                        &routes,
+                        ModDest::Drive,
+                        |offset| p.filter_drive.modulated_normalized_value() + offset,
+                    )));
                 });
-                // The type sits under its knobs, like the LFO's buttons under its own.
+                // The type and slope sit under the knobs, like the LFO's buttons under its own.
                 ui.add_space(6.0);
-                switch(
-                    ui,
-                    &p.filter_type,
-                    &setter,
-                    &[
-                        (FilterType::LowPass, "LP"),
-                        (FilterType::HighPass, "HP"),
-                        (FilterType::BandPass, "BP"),
-                        (FilterType::Notch, "NOTCH"),
-                    ],
-                );
+                ui.horizontal(|ui| {
+                    switch(
+                        ui,
+                        &p.filter_type,
+                        &setter,
+                        &[
+                            (FilterType::LowPass, "LP"),
+                            (FilterType::HighPass, "HP"),
+                            (FilterType::BandPass, "BP"),
+                            (FilterType::Notch, "NOTCH"),
+                        ],
+                    );
+                    switch(
+                        ui,
+                        &p.filter_slope,
+                        &setter,
+                        &[(FilterSlope::Db12, "12"), (FilterSlope::Db24, "24")],
+                    );
+                });
             });
             group(ui, |ui| {
                 knob_section(ui, "Amp", |ui| {

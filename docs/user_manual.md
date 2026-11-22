@@ -61,7 +61,9 @@ See [Porta](#porta).
 |---|---|---|---|
 | Cutoff | 20 Hz – 20 kHz | 20 kHz | The frequency the filter works around. |
 | Res | 0–100% | 0% | Resonance: a peak at the cutoff, from none to a strong ring. For BP and NOTCH it narrows the band instead. |
+| Drive | 0–100% | 0% | How hard the sound is pushed into the filter. Thickens and adds grit, and makes high resonance grind instead of ring. 0% is perfectly clean. |
 | Type | LP / HP / BP / NOTCH | LP | Which part of the sound the filter keeps (see [The filter](#the-filter)). |
+| Slope | 12 / 24 | 12 | How steeply it cuts past the cutoff: 12 dB/octave (open) or 24 dB/octave (darker, rounder). |
 
 ### Amp
 
@@ -121,7 +123,7 @@ fills in these slots for you.
 | Param | Range | Default | What it does |
 |---|---|---|---|
 | Source | Off, LFO, Mod Env, Velocity, Random | Off | What does the moving (see [Modulation](#modulation)). |
-| Dest | Off, Shape, Shape 2, Osc Mix, Cutoff, Res, Pitch, Pitch 2, Detune, Bits, Steps, Crush Mix | Off | What gets moved. Shape 2, Osc Mix and Pitch 2 are the Osc 2 knobs, Detune is the Unison knob, and Bits, Steps and Crush Mix are the Crush knobs. |
+| Dest | Off, Shape, Shape 2, Osc Mix, Cutoff, Res, Pitch, Pitch 2, Detune, Bits, Steps, Crush Mix, Drive | Off | What gets moved. Shape 2, Osc Mix and Pitch 2 are the Osc 2 knobs, Detune is the Unison knob, Bits, Steps and Crush Mix are the Crush knobs, and Drive is the Filter's Drive knob. |
 | Amount | −100 to +100% | 0 | How far, shown in the destination's unit (like `+2.0 oct` or `−8.0 bits`). Negative flips the direction. |
 
 Hover over or drag any control to see its exact value in the readout at the top right.
@@ -231,10 +233,10 @@ Changing Voices while a note is held can give a small tick, as copies come and g
 
 ### The filter
 
-A 12 dB/octave resonant filter: a state-variable design that stays stable and smooth
-even when the cutoff moves every sample, which matters because the envelope and LFO
-sweep it. At full resonance it rings strongly but stops just short of self-oscillation,
-so it never whistles on its own.
+A resonant state-variable filter that stays stable and smooth even when the cutoff
+moves every sample, which matters because the envelope and LFO sweep it. At full
+resonance it rings strongly but stops just short of self-oscillation, so it never
+whistles on its own.
 
 The Type switch picks which part of the sound it keeps:
 
@@ -250,6 +252,28 @@ The Type switch picks which part of the sound it keeps:
 
 All four types come out of the same filter at once, so switching while a note plays
 doesn't reset it.
+
+The Slope switch sets how hard it cuts past the cutoff:
+
+- **12** (12 dB/octave): one filter stage. Gentle and open; the default.
+- **24** (24 dB/octave): two stages in a row, so the cut is twice as steep: darker,
+  rounder lows, the classic "fat" synth filter. Only the second stage resonates, so you
+  still get one clean peak, not two stacked up. The peak is a little softer than at 12,
+  which is normal for 4-pole filters. Flipping the slope while a note sounds can click
+  slightly.
+
+**Drive** pushes the sound into the filter harder, in two ways at once:
+
+- Before the filter, a soft clipper rounds off the peaks and lifts the quieter parts,
+  adding harmonics for the filter to shape. Loud peaks stay at the same level, so
+  turning Drive up thickens the sound more than it makes it louder.
+- Inside the filter, its resonance saturates the way an analog filter's parts do. At
+  high Res the peak gets squashed and grinds instead of ringing cleanly.
+
+Try 24 dB, high Res and high Drive for an aggressive, growling sweep, or Mod Env → Drive
+for a bark at the start of every note. At high Drive with the filter wide open, very
+bright patches can pick up a faint metallic fizz (aliasing); pulling Cutoff down a little
+removes it.
 
 Cutoff modulation is measured in octaves, so a given amount sounds the same anywhere in
 the range: +1 octave always doubles the cutoff.
@@ -312,6 +336,7 @@ Destinations, and what a slot's amount at 100% means for each:
 | Osc Mix | Mix range | the whole 0–100% |
 | Cutoff | octaves | 6 oct (+1 oct doubles the cutoff) |
 | Res | Res range | the whole 0–100% |
+| Drive | Drive range | the whole 0–100% |
 | Pitch | semitones | 24 st (both oscillators) |
 | Pitch 2 | semitones | 36 st (osc 2 only) |
 | Detune | cents | 100 ct (the whole Detune range) |
@@ -326,6 +351,7 @@ even with the Bits or Steps knob at Off, as long as Crush is switched ON.
 Some starting points:
 
 - Mod Env → Cutoff, positive: a filter pluck on every note.
+- Mod Env → Drive, positive: a growl on each note's attack that settles to clean.
 - LFO → Shape: the wave slowly morphs, like a filter sweep from the source itself.
 - Mod Env → Steps, around −4 oct: each note starts chiptune-crunchy and cleans up.
 - Velocity → Bits, negative: harder hits get grittier.

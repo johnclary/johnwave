@@ -1,4 +1,4 @@
-//! A resonant 12 dB/octave filter: low-pass, high-pass, band-pass or notch.
+//! A resonant filter: low-pass, high-pass, band-pass or notch, at 12 or 24 dB/octave.
 //!
 //! This is a state-variable filter (SVF) in the "topology-preserving transform" form
 //! described by Andrew Simper (Cytomic). It stays stable and smooth even when the cutoff
@@ -7,6 +7,16 @@
 //! An SVF works out its low-pass and band-pass outputs together each sample, and the
 //! other types are just those mixed with the input. So all four cost the same, and you
 //! can switch type while a note plays without the filter losing its memory.
+//!
+//! Drive pushes the sound into the filter harder, in two ways. Before the filter, a soft
+//! clipper (tanh) rounds off the peaks and adds harmonics for the filter to shape. Inside
+//! it, the band-pass state is soft-clipped too, the way an analog filter's parts saturate:
+//! at high resonance the peak gets squashed and grinds instead of ringing cleanly. At 0%
+//! drive both are skipped and the filter is exactly the clean one.
+//!
+//! The 24 dB slope runs two of these stages one after the other. Only the second one
+//! gets the resonance: the first is fixed at the damping of a 4-pole Butterworth filter,
+//! so at 0% resonance the pair is flat, and at 100% there's one peak, not two stacked up.
 
 use nice_plug::prelude::Enum;
 use std::f32::consts::PI;
@@ -32,46 +42,59 @@ pub enum FilterType {
     Notch,
 }
 
+/// How steeply the filter cuts past the cutoff.
+#[derive(Enum, PartialEq, Clone, Copy, Debug)]
+pub enum FilterSlope {
+    /// One stage: gentle, open.
+    #[id = "12"]
+    #[name = "12 dB"]
+    Db12,
+    /// Two stages: steeper, darker and rounder.
+    #[id = "24"]
+    #[name = "24 dB"]
+    Db24,
+}
+
 /// Damping at 0% resonance: the flattest response with no peak (Q ≈ 0.707).
 const K_MAX: f32 = std::f32::consts::SQRT_2;
 /// Damping at 100% resonance (Q = 10): a strong, ringing peak. It stays just short of
 /// self-oscillation, so the filter can't whistle on its own.
 const K_MIN: f32 = 0.1;
 
+/// 4-pole Butterworth damping for the two stages of the 24 dB slope (2·cos(π/8) and
+/// 2·cos(3π/8)). Together they give a flat response at 0% resonance.
+const K_24_FIRST: f32 = 1.847_759;
+const K_24_SECOND: f32 = 0.765_367;
+
+/// Pre-filter gain at 100% drive: 8× (about +18 dB) for quiet signals.
+const MAX_DRIVE_GAIN: f32 = 8.0;
+
+/// One 12 dB/octave SVF stage.
 #[derive(Default)]
-pub struct Filter {
-    // The filter's memory: two integrator states.
+struct Stage {
+    // The stage's memory: two integrator states.
     ic1eq: f32,
     ic2eq: f32,
 }
 
-impl Filter {
-    pub fn reset(&mut self) {
-        self.ic1eq = 0.0;
-        self.ic2eq = 0.0;
-    }
-
-    /// Filter one sample. `resonance` runs 0..=1.
-    pub fn process(
-        &mut self,
-        input: f32,
-        kind: FilterType,
-        cutoff_hz: f32,
-        resonance: f32,
-        sample_rate: f32,
-    ) -> f32 {
-        // Keep the cutoff in a safe range. tan() blows up approaching Nyquist.
-        let cutoff = cutoff_hz.clamp(10.0, 0.45 * sample_rate);
-        let g = (PI * cutoff / sample_rate).tan();
-        let k = K_MAX + (K_MIN - K_MAX) * resonance.clamp(0.0, 1.0);
-
+impl Stage {
+    /// Filter one sample. `g` sets the cutoff and `k` the damping (less = more resonance).
+    /// `sat` (0..=1) blends the band-pass state toward its soft-clipped version.
+    fn process(&mut self, input: f32, kind: FilterType, g: f32, k: f32, sat: f32) -> f32 {
         let a1 = 1.0 / (1.0 + g * (g + k));
         let a2 = g * a1;
         let a3 = g * a2;
 
         let v3 = input - self.ic2eq;
-        let v1 = a1 * self.ic1eq + a2 * v3;
-        let v2 = self.ic2eq + a2 * self.ic1eq + a3 * v3;
+        let mut v1 = a1 * self.ic1eq + a2 * v3;
+        let mut v2 = self.ic2eq + a2 * self.ic1eq + a3 * v3;
+        if sat > 0.0 {
+            // Saturate the band state, then work the low-pass out from that (v2 is
+            // always ic2eq + g·v1), so the two stay consistent. tanh can only shrink v1,
+            // which also keeps the resonance from running away.
+            v1 += (v1.tanh() - v1) * sat;
+            v2 = self.ic2eq + g * v1;
+        }
         self.ic1eq = 2.0 * v1 - self.ic1eq;
         self.ic2eq = 2.0 * v2 - self.ic2eq;
 
@@ -89,6 +112,61 @@ impl Filter {
     }
 }
 
+#[derive(Default)]
+pub struct Filter {
+    stages: [Stage; 2],
+}
+
+impl Filter {
+    pub fn reset(&mut self) {
+        self.stages = Default::default();
+    }
+
+    /// Filter one sample. `resonance` and `drive` run 0..=1.
+    #[allow(clippy::too_many_arguments)]
+    pub fn process(
+        &mut self,
+        input: f32,
+        kind: FilterType,
+        slope: FilterSlope,
+        cutoff_hz: f32,
+        resonance: f32,
+        drive: f32,
+        sample_rate: f32,
+    ) -> f32 {
+        // Keep the cutoff in a safe range. tan() blows up approaching Nyquist.
+        let cutoff = cutoff_hz.clamp(10.0, 0.45 * sample_rate);
+        let g = (PI * cutoff / sample_rate).tan();
+        let res = resonance.clamp(0.0, 1.0);
+        let drive = drive.clamp(0.0, 1.0);
+
+        // tanh(gain·x) / tanh(gain): a full-scale peak stays at full scale, quieter parts
+        // are boosted and rounded. As the gain shrinks toward 0 this becomes plain x, so
+        // the sound changes smoothly as Drive leaves 0%.
+        let gain = MAX_DRIVE_GAIN * drive;
+        let input = if gain > 1e-3 {
+            (gain * input).tanh() / gain.tanh()
+        } else {
+            input
+        };
+
+        match slope {
+            FilterSlope::Db12 => {
+                // Keep the unused second stage empty, so switching to 24 dB mid-note
+                // starts it fresh instead of from a leftover old state.
+                self.stages[1] = Stage::default();
+                let k = K_MAX + (K_MIN - K_MAX) * res;
+                self.stages[0].process(input, kind, g, k, drive)
+            }
+            FilterSlope::Db24 => {
+                let k = K_24_SECOND + (K_MIN - K_24_SECOND) * res;
+                let first = self.stages[0].process(input, kind, g, K_24_FIRST, drive);
+                self.stages[1].process(first, kind, g, k, drive)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,12 +180,22 @@ mod tests {
     }
 
     fn gain_of(kind: FilterType, freq: f32, cutoff: f32, resonance: f32) -> f32 {
+        gain_sloped(kind, FilterSlope::Db12, freq, cutoff, resonance)
+    }
+
+    fn gain_sloped(
+        kind: FilterType,
+        slope: FilterSlope,
+        freq: f32,
+        cutoff: f32,
+        resonance: f32,
+    ) -> f32 {
         let mut f = Filter::default();
         let n = SR as usize;
         let mut peak: f32 = 0.0;
         for i in 0..n {
             let x = (i as f32 * freq / SR * TAU).sin();
-            let y = f.process(x, kind, cutoff, resonance, SR);
+            let y = f.process(x, kind, slope, cutoff, resonance, 0.0, SR);
             if i > n / 2 {
                 peak = peak.max(y.abs());
             }
@@ -140,16 +228,19 @@ mod tests {
     fn stays_stable_under_wild_cutoff_sweeps() {
         // A full-scale square, with the cutoff sweeping 20 Hz ↔ 20 kHz 50 times a second
         // at full resonance, through every type. The output must stay finite and bounded.
-        let mut filters: [Filter; 4] = Default::default();
+        // Both slopes, clean and fully driven.
+        let mut filters: [Filter; 16] = Default::default();
         for i in 0..(2.0 * SR) as usize {
             let t = i as f32 / SR;
             let x = if (t * 110.0).fract() < 0.5 { 1.0 } else { -1.0 };
             let sweep = 0.5 + 0.5 * (t * 50.0 * TAU).sin();
             let cutoff = 20.0 * 1000f32.powf(sweep);
             for (n, f) in filters.iter_mut().enumerate() {
-                let kind = FilterType::from_index(n);
-                let y = f.process(x, kind, cutoff, 1.0, SR);
-                assert!(y.is_finite() && y.abs() < 30.0, "{kind:?} sample {i}: {y}");
+                let kind = FilterType::from_index(n % 4);
+                let slope = FilterSlope::from_index(n / 4 % 2);
+                let drive = (n / 8) as f32;
+                let y = f.process(x, kind, slope, cutoff, 1.0, drive, SR);
+                assert!(y.is_finite() && y.abs() < 30.0, "{kind:?} {slope:?} sample {i}: {y}");
             }
         }
     }
@@ -181,5 +272,80 @@ mod tests {
         let away = gain_of(FilterType::Notch, 7_000.0, 1_000.0, 0.5);
         assert!(at < 0.02, "at {at}");
         assert!((away - 1.0).abs() < 0.05, "away {away}");
+    }
+
+    #[test]
+    fn slope_24_cuts_twice_as_hard() {
+        // Two octaves above a 1 kHz cutoff: 12 dB/oct gives about −24 dB, 24 dB/oct
+        // about −48 dB.
+        let db = |g: f32| 20.0 * g.log10();
+        let g12 = db(gain_sloped(FilterType::LowPass, FilterSlope::Db12, 4_000.0, 1_000.0, 0.0));
+        let g24 = db(gain_sloped(FilterType::LowPass, FilterSlope::Db24, 4_000.0, 1_000.0, 0.0));
+        assert!((g12 + 24.0).abs() < 2.0, "12 dB: {g12}");
+        assert!((g24 + 48.0).abs() < 3.0, "24 dB: {g24}");
+    }
+
+    #[test]
+    fn slope_24_is_flat_without_resonance_and_has_one_peak_with_it() {
+        let at = |res| gain_sloped(FilterType::LowPass, FilterSlope::Db24, 1_000.0, 1_000.0, res);
+        let low = gain_sloped(FilterType::LowPass, FilterSlope::Db24, 50.0, 1_000.0, 0.0);
+        assert!((low - 1.0).abs() < 0.01, "low {low}");
+        let flat = at(0.0);
+        assert!((flat - std::f32::consts::FRAC_1_SQRT_2).abs() < 0.02, "flat {flat}");
+        // Only one stage resonates: a clear peak, nowhere near two stacked (~100×).
+        let peaky = at(1.0);
+        assert!(peaky > 4.0 && peaky < 8.0, "peaky {peaky}");
+    }
+
+    /// Run a 200 Hz sine through a wide-open low-pass with this drive and resonance.
+    fn driven_sine(drive: f32, cutoff: f32, resonance: f32) -> Vec<f32> {
+        let mut f = Filter::default();
+        (0..SR as usize)
+            .map(|i| {
+                let x = (i as f32 * 200.0 / SR * TAU).sin();
+                f.process(x, FilterType::LowPass, FilterSlope::Db12, cutoff, resonance, drive, SR)
+            })
+            .collect()
+    }
+
+    /// How much of `freq` is in the second half of `signal` (a one-bin Fourier sum).
+    fn amount_of(signal: &[f32], freq: f32) -> f32 {
+        let half = &signal[signal.len() / 2..];
+        let (mut re, mut im) = (0.0f32, 0.0f32);
+        for (i, &y) in half.iter().enumerate() {
+            let phase = i as f32 * freq / SR * TAU;
+            re += y * phase.cos();
+            im += y * phase.sin();
+        }
+        2.0 * (re * re + im * im).sqrt() / half.len() as f32
+    }
+
+    #[test]
+    fn drive_leaves_zero_smoothly() {
+        // A hair of drive sounds the same as none: no jump as the knob leaves 0%.
+        let clean = driven_sine(0.0, 20_000.0, 0.0);
+        let hair = driven_sine(0.001, 20_000.0, 0.0);
+        let worst = clean.iter().zip(&hair).map(|(a, b)| (a - b).abs()).fold(0.0, f32::max);
+        assert!(worst < 0.01, "worst {worst}");
+    }
+
+    #[test]
+    fn drive_adds_odd_harmonics() {
+        let clean = amount_of(&driven_sine(0.0, 20_000.0, 0.0), 600.0);
+        let driven = amount_of(&driven_sine(1.0, 20_000.0, 0.0), 600.0);
+        assert!(clean < 0.001, "clean {clean}");
+        assert!(driven > 0.05, "driven {driven}");
+    }
+
+    #[test]
+    fn drive_squashes_the_resonant_peak() {
+        let peak = |drive| {
+            let out = driven_sine(drive, 200.0, 1.0);
+            out[out.len() / 2..].iter().fold(0.0f32, |m, y| m.max(y.abs()))
+        };
+        let clean = peak(0.0);
+        let driven = peak(1.0);
+        assert!(clean > 8.0, "clean {clean}");
+        assert!(driven < clean / 2.0, "driven {driven}");
     }
 }

@@ -10,7 +10,7 @@
 
 use crate::crush::{self, Crusher};
 use crate::env::{Adsr, AdsrSettings};
-use crate::filter::{Filter, FilterType};
+use crate::filter::{Filter, FilterSlope, FilterType};
 use crate::lfo::{Lfo, LfoOut};
 use crate::modulation::{self, ModSources, Routes};
 use crate::osc::MorphOsc;
@@ -83,8 +83,10 @@ pub struct VoiceParams {
     /// Pitch shift for every voice in semitones (bend wheel + Coarse + Fine).
     pub pitch_st: f32,
     pub filter_type: FilterType,
+    pub filter_slope: FilterSlope,
     pub cutoff_hz: f32,
     pub resonance: f32,
+    pub filter_drive: f32,
     /// The Crush switch: 0 = bypassed, 1 = on, fading in between.
     pub crush_amount: f32,
     /// Bitcrusher bit depth (`crush::MIN_BITS..=MAX_BITS`).
@@ -360,6 +362,7 @@ impl Voice {
         });
         let cutoff = p.cutoff_hz * off.cutoff_oct.exp2();
         let resonance = p.resonance + off.resonance;
+        let drive = p.filter_drive + off.drive;
 
         let amp = self.amp_env.next(&p.amp_env, sample_rate);
         self.level = amp * velocity;
@@ -372,7 +375,15 @@ impl Voice {
                 let crushed = self.crusher[side].process(*x, bits, hold);
                 *x += (crushed - *x) * mix;
             }
-            *x = self.filter[side].process(*x, p.filter_type, cutoff, resonance, sample_rate);
+            *x = self.filter[side].process(
+                *x,
+                p.filter_type,
+                p.filter_slope,
+                cutoff,
+                resonance,
+                drive,
+                sample_rate,
+            );
             *x *= self.level;
         }
         (sides[0], sides[1])
@@ -501,8 +512,10 @@ mod tests {
         shared_lfo: None,
         pitch_st: 0.0,
         filter_type: FilterType::LowPass,
+        filter_slope: FilterSlope::Db12,
         cutoff_hz: 20_000.0,
         resonance: 0.0,
+        filter_drive: 0.0,
         // Switched on, but with both knobs at their top ("Off"), so the tests start
         // from the clean sound and turn on only the crush they're testing.
         crush_amount: 1.0,

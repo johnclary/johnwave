@@ -15,6 +15,7 @@
 //! - Osc Mix: mix units (1.0 = the whole osc 1 → osc 2 range)
 //! - Cutoff: octaves (+1 doubles the cutoff, −1 halves it)
 //! - Resonance: resonance units (1.0 = the whole 0–100% range)
+//! - Drive (filter drive): drive units (1.0 = the whole 0–100% range)
 //! - Pitch (both oscillators), Osc 2 Pitch (osc 2 only): semitones
 //! - Detune (unison spread): cents
 //! - Bits (crusher bit depth): bits
@@ -64,6 +65,7 @@ pub enum ModDest {
     UnisonDetune,
     Cutoff,
     Resonance,
+    Drive,
     Pitch,
     CrushBits,
     CrushSteps,
@@ -82,6 +84,7 @@ impl ModDest {
             ModDest::UnisonDetune => crate::unison::MAX_DETUNE_CT,
             ModDest::Cutoff => 6.0,
             ModDest::Resonance => 1.0,
+            ModDest::Drive => 1.0,
             ModDest::Pitch => 24.0,
             ModDest::CrushBits => crate::crush::MAX_BITS - crate::crush::MIN_BITS,
             // From the top (256) to the bottom (2) is 7 halvings.
@@ -98,6 +101,7 @@ impl ModDest {
             | ModDest::Osc2Morph
             | ModDest::OscMix
             | ModDest::Resonance
+            | ModDest::Drive
             | ModDest::CrushMix => {
                 format!("{:+.0}%", value * 100.0)
             }
@@ -192,6 +196,8 @@ pub enum SlotDest {
     #[id = "crush_mix"]
     #[name = "Crush Mix"]
     CrushMix,
+    #[id = "drive"]
+    Drive,
 }
 
 impl SlotDest {
@@ -205,6 +211,7 @@ impl SlotDest {
             ModDest::UnisonDetune => SlotDest::Detune,
             ModDest::Cutoff => SlotDest::Cutoff,
             ModDest::Resonance => SlotDest::Resonance,
+            ModDest::Drive => SlotDest::Drive,
             ModDest::Pitch => SlotDest::Pitch,
             ModDest::CrushBits => SlotDest::CrushBits,
             ModDest::CrushSteps => SlotDest::CrushSteps,
@@ -232,6 +239,7 @@ impl SlotDest {
             SlotDest::CrushBits => Some(ModDest::CrushBits),
             SlotDest::CrushSteps => Some(ModDest::CrushSteps),
             SlotDest::CrushMix => Some(ModDest::CrushMix),
+            SlotDest::Drive => Some(ModDest::Drive),
         }
     }
 
@@ -362,6 +370,7 @@ pub struct ModOffsets {
     pub unison_detune_ct: f32,
     pub cutoff_oct: f32,
     pub resonance: f32,
+    pub drive: f32,
     pub pitch_st: f32,
     pub crush_bits: f32,
     pub crush_steps_oct: f32,
@@ -378,6 +387,7 @@ impl ModOffsets {
             ModDest::UnisonDetune => self.unison_detune_ct += value,
             ModDest::Cutoff => self.cutoff_oct += value,
             ModDest::Resonance => self.resonance += value,
+            ModDest::Drive => self.drive += value,
             ModDest::Pitch => self.pitch_st += value,
             ModDest::CrushBits => self.crush_bits += value,
             ModDest::CrushSteps => self.crush_steps_oct += value,

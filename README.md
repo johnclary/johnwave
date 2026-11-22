@@ -47,6 +47,10 @@ folder at `target/bundled` and just rebuild + rescan.
 
 ## Todo
 
+- second lfo and second mod env (and/or use amp env as a mod source)
+- lfo fade/tail
+- filter scale 
 - ability to type in param values (with left click?)
 - a second filter
+- 2× oversampling around the filter, if Drive's aliasing turns out audible
 - small line in center of polar knobs
