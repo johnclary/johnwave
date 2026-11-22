@@ -41,6 +41,9 @@ pub enum ModSource {
 }
 
 impl ModSource {
+    /// Every source, in the order the window lists them.
+    pub const ALL: [ModSource; 4] = [ModSource::Lfo, ModSource::ModEnv, ModSource::Velocity, ModSource::Random];
+
     /// The lowest and highest values this source can reach.
     pub fn range(self) -> (f32, f32) {
         match self {
@@ -126,6 +129,21 @@ pub enum SlotSource {
 }
 
 impl SlotSource {
+    /// The matrix choice for `source`.
+    pub fn of(source: ModSource) -> SlotSource {
+        match source {
+            ModSource::Lfo => SlotSource::Lfo,
+            ModSource::ModEnv => SlotSource::ModEnv,
+            ModSource::Velocity => SlotSource::Velocity,
+            ModSource::Random => SlotSource::Random,
+        }
+    }
+
+    /// Its name as the window shows it ("Mod Env").
+    pub fn name(self) -> &'static str {
+        Self::variants()[self.to_index()]
+    }
+
     /// The source, or `None` for Off.
     pub fn source(self) -> Option<ModSource> {
         match self {
@@ -176,6 +194,28 @@ pub enum SlotDest {
 }
 
 impl SlotDest {
+    /// The matrix choice for `dest`. The reverse of `dest()`.
+    pub fn of(dest: ModDest) -> SlotDest {
+        match dest {
+            ModDest::Morph => SlotDest::Shape,
+            ModDest::Osc2Morph => SlotDest::Shape2,
+            ModDest::Osc2Pitch => SlotDest::Pitch2,
+            ModDest::OscMix => SlotDest::OscMix,
+            ModDest::UnisonDetune => SlotDest::Detune,
+            ModDest::Cutoff => SlotDest::Cutoff,
+            ModDest::Resonance => SlotDest::Resonance,
+            ModDest::Pitch => SlotDest::Pitch,
+            ModDest::CrushBits => SlotDest::CrushBits,
+            ModDest::CrushSteps => SlotDest::CrushSteps,
+            ModDest::CrushMix => SlotDest::CrushMix,
+        }
+    }
+
+    /// Its name as the window shows it ("Crush Mix").
+    pub fn name(self) -> &'static str {
+        Self::variants()[self.to_index()]
+    }
+
     /// The destination, or `None` for Off.
     pub fn dest(self) -> Option<ModDest> {
         match self {
@@ -210,7 +250,7 @@ pub fn enum_id<T: Enum>(choice: T) -> &'static str {
 }
 
 /// How many slots the mod matrix has.
-pub const MATRIX_SLOTS: usize = 6;
+pub const MATRIX_SLOTS: usize = 16;
 
 /// One mod matrix slot: source → destination, by `amount`.
 ///
@@ -255,8 +295,8 @@ pub struct Route {
     pub amount: f32,
 }
 
-/// Room for every matrix slot, with space to spare.
-const MAX_ROUTES: usize = 16;
+/// Room for one route per matrix slot.
+const MAX_ROUTES: usize = MATRIX_SLOTS;
 
 /// A fixed-size list of routes. It uses a plain array instead of a `Vec`, so building
 /// it every sample never allocates memory (allocating on the audio thread can glitch).
@@ -356,14 +396,15 @@ pub fn apply(routes: &Routes, sources: &ModSources) -> ModOffsets {
 }
 
 /// How far the routes can push `dest`, as `(lowest, highest)` offsets in its unit, or
-/// `None` if nothing is routed to it. The knobs draw this as their mod arc.
+/// `None` if nothing is routed there. With `only` set, just that source's routes count
+/// (mod mode's view). The knobs draw this as their mod arc.
 ///
 /// Each route reaches from `amount × source's lowest` to `amount × source's highest`
 /// (swapped when the amount is negative). Routes to the same destination add up, so
 /// their lowest points add and their highest points add.
-pub fn dest_span(routes: &Routes, dest: ModDest) -> Option<(f32, f32)> {
+pub fn mod_span(routes: &Routes, dest: ModDest, only: Option<ModSource>) -> Option<(f32, f32)> {
     let mut span = None;
-    for route in routes.iter().filter(|r| r.dest == dest) {
+    for route in routes.iter().filter(|r| r.dest == dest && only.is_none_or(|s| r.source == s)) {
         let (lo, hi) = route.source.range();
         let (a, b) = (lo * route.amount, hi * route.amount);
         let (total_lo, total_hi) = span.unwrap_or((0.0, 0.0));
@@ -382,6 +423,18 @@ mod tests {
         velocity: 1.0,
         random: 0.3,
     };
+
+    #[test]
+    fn slot_choices_map_both_ways() {
+        // Every choice but Off (index 0) round-trips.
+        for i in 1..SlotDest::variants().len() {
+            let choice = SlotDest::from_index(i);
+            assert_eq!(SlotDest::of(choice.dest().unwrap()), choice);
+        }
+        for source in ModSource::ALL {
+            assert_eq!(SlotSource::of(source).source(), Some(source));
+        }
+    }
 
     #[test]
     fn no_routes_means_no_change() {
@@ -420,7 +473,9 @@ mod tests {
     fn span_of_an_unrouted_destination_is_none() {
         let mut routes = Routes::EMPTY;
         routes.add(ModSource::Lfo, ModDest::Cutoff, 2.0);
-        assert_eq!(dest_span(&routes, ModDest::Morph), None);
+        assert_eq!(mod_span(&routes, ModDest::Morph, Some(ModSource::Lfo)), None);
+        // Routed there, but from a different source.
+        assert_eq!(mod_span(&routes, ModDest::Cutoff, Some(ModSource::ModEnv)), None);
     }
 
     #[test]
@@ -428,16 +483,20 @@ mod tests {
         let mut routes = Routes::EMPTY;
         routes.add(ModSource::Lfo, ModDest::Cutoff, 2.0); // bipolar: both ways
         routes.add(ModSource::ModEnv, ModDest::Pitch, -12.0); // unipolar, flipped
-        assert_eq!(dest_span(&routes, ModDest::Cutoff), Some((-2.0, 2.0)));
-        assert_eq!(dest_span(&routes, ModDest::Pitch), Some((-12.0, 0.0)));
+        assert_eq!(mod_span(&routes, ModDest::Cutoff, Some(ModSource::Lfo)), Some((-2.0, 2.0)));
+        assert_eq!(mod_span(&routes, ModDest::Pitch, Some(ModSource::ModEnv)), Some((-12.0, 0.0)));
     }
 
     #[test]
     fn spans_of_routes_to_the_same_destination_add_up() {
         let mut routes = Routes::EMPTY;
         routes.add(ModSource::Lfo, ModDest::Morph, 0.25); // −0.25..+0.25
-        routes.add(ModSource::Velocity, ModDest::Morph, 0.5); // 0..+0.5
-        assert_eq!(dest_span(&routes, ModDest::Morph), Some((-0.25, 0.75)));
+        routes.add(ModSource::Lfo, ModDest::Morph, -0.5); // −0.5..+0.5
+        routes.add(ModSource::Velocity, ModDest::Morph, 0.5); // a different source
+        assert_eq!(mod_span(&routes, ModDest::Morph, Some(ModSource::Lfo)), Some((-0.75, 0.75)));
+        assert_eq!(mod_span(&routes, ModDest::Morph, Some(ModSource::Velocity)), Some((0.0, 0.5)));
+        // All sources together.
+        assert_eq!(mod_span(&routes, ModDest::Morph, None), Some((-0.75, 1.25)));
     }
 
     #[test]

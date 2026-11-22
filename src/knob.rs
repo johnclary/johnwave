@@ -9,8 +9,14 @@
 //!
 //! Its name and value show in the readout box (`readout.rs`) while you're on it.
 //!
-//! It only reads and sets the parameter. Nothing else.
+//! In mod mode (a source armed in the header), a knob that's a mod destination edits
+//! that source's route instead: dragging sets the amount (adding a route in a free
+//! matrix slot if there isn't one) and double-click removes it. Knobs that can't be
+//! modulated dim and ignore the mouse until mod mode ends.
+//!
+//! It only reads and sets parameters: its own, and in mod mode the matrix slots.
 
+use crate::modulation::{ModSlotParams, ModSource, SlotDest, SlotSource};
 use nice_plug::prelude::{Param, ParamSetter};
 
 /// Everything about how the knob looks, in one place so it's easy to tweak.
@@ -29,8 +35,8 @@ pub struct KnobStyle {
     pub track_color: egui::Color32,
     /// Size of the name underneath ("Gain").
     pub label_text_size: f32,
-    /// Colour of the mod arc: the thin stripe along the value arc's ring showing how far
-    /// the mod matrix can push this knob.
+    /// Colour of the mod arc: the stripe along the value arc's ring showing how far the
+    /// mod matrix can push this knob.
     pub mod_color: egui::Color32,
     /// Thickness of the mod arc. At `arc_width` it covers the value arc completely (its
     /// glow still shows around the edges); thinner leaves a cyan edge either side.
@@ -50,9 +56,7 @@ impl Default for KnobStyle {
             arc_color: crate::editor::cyan(),
             track_color: egui::Color32::from_gray(60),
             label_text_size: 12.0,
-            // A dusky pink, far enough round the colour wheel from the cyan to stand
-            // apart: #C95DA7, which is 319°, 54%, 79% in a normal colour picker.
-            mod_color: egui::Color32::from_rgb(0xC9, 0x5D, 0xA7),
+            mod_color: crate::editor::mod_pink(),
             mod_arc_width: 5.0,
             tick_width: 2.0,
         }
@@ -95,8 +99,19 @@ pub struct Knob<'a, P: Param> {
     style: KnobStyle,
     /// Whether the arc grows out from the top centre instead of from the bottom-left.
     bipolar: bool,
-    /// How far the mod matrix can push this knob, as `(lowest, highest)` positions 0..1.
-    mod_span: Option<(f32, f32)>,
+    /// Set for knobs that are mod destinations: their arc, and what mod mode edits.
+    mod_target: Option<ModTarget<'a>>,
+}
+
+/// What makes a knob a mod destination.
+pub struct ModTarget<'a> {
+    /// Which matrix destination this knob is.
+    pub dest: SlotDest,
+    /// How far the routes can push it, as knob positions `(lowest, highest)` 0..1, or
+    /// `None` if nothing reaches it. In mod mode, only the armed source's routes count.
+    pub span: Option<(f32, f32)>,
+    /// The matrix slots, which mod mode reads and writes.
+    pub slots: &'a [ModSlotParams],
 }
 
 impl<'a, P: Param> Knob<'a, P> {
@@ -107,7 +122,7 @@ impl<'a, P: Param> Knob<'a, P> {
             label,
             style: KnobStyle::default(),
             bipolar: false,
-            mod_span: None,
+            mod_target: None,
         }
     }
 
@@ -119,10 +134,10 @@ impl<'a, P: Param> Knob<'a, P> {
         self
     }
 
-    /// Show how far the mod matrix can push this knob: a thin arc between two positions
-    /// 0..1 on the knob. `None` (nothing routed here) draws no arc.
-    pub fn mod_span(mut self, span: Option<(f32, f32)>) -> Self {
-        self.mod_span = span;
+    /// Make this knob a mod destination: it shows its routes' arc, and mod mode can
+    /// paint routes onto it.
+    pub fn mod_target(mut self, target: ModTarget<'a>) -> Self {
+        self.mod_target = Some(target);
         self
     }
 
@@ -141,32 +156,9 @@ impl<'a, P: Param> Knob<'a, P> {
             self.setter.set_parameter(self.param, value);
         }
     }
-}
 
-/// Implementing egui's `Widget` trait is what lets us write `ui.add(Knob::new(...))`.
-impl<P: Param> egui::Widget for Knob<'_, P> {
-    fn ui(self, ui: &mut egui::Ui) -> egui::Response {
-        let style = &self.style;
-        // As wide as the knob or its name, whichever is wider, so long names like
-        // "Bend Range" don't run into the next knob in a row.
-        let label_width = ui
-            .painter()
-            .layout_no_wrap(
-                self.label.to_string(),
-                egui::FontId::proportional(style.label_text_size),
-                egui::Color32::WHITE,
-            )
-            .size()
-            .x;
-        let size = egui::vec2(
-            style.diameter.max(label_width),
-            style.diameter / 2.0 + style.arc_bottom() + LABEL_GAP + style.label_text_size,
-        );
-        let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
-        let mut response = response.on_hover_cursor(egui::CursorIcon::ResizeVertical);
-
-        // --- Mouse ---
-
+    /// The usual mouse handling: drag, scroll and double-click change the value.
+    fn value_input(&self, ui: &egui::Ui, response: &mut egui::Response) {
         // While dragging, we keep our own copy of the position (0..1) in egui's memory
         // instead of re-reading the parameter each frame. The parameter may round the value
         // (e.g. to whole semitones), and re-reading it would make slow drags get stuck.
@@ -210,6 +202,127 @@ impl<P: Param> egui::Widget for Knob<'_, P> {
                 response.mark_changed();
             }
         }
+    }
+
+    /// Mod mode: drag sets `source`'s route amount to this knob, adding the route in a
+    /// free slot on the first move if there isn't one. Double-click removes it.
+    fn paint_route(
+        &self,
+        ui: &egui::Ui,
+        response: &mut egui::Response,
+        source: ModSource,
+        target: &ModTarget,
+    ) {
+        let slot_source = SlotSource::of(source);
+        let slots = target.slots;
+        let routed = |i: &usize| slots[*i].source.value() == slot_source && slots[*i].dest.value() == target.dest;
+        let existing = (0..slots.len()).find(routed);
+        let free = || (0..slots.len()).find(|&i| slots[i].source.value() == SlotSource::Off || slots[i].dest.value() == SlotDest::Off);
+
+        // Like the value drag: our own copy of (slot, amount) while dragging.
+        let drag_id = response.id.with("mod_paint");
+        let mut drag = ui.data(|d| d.get_temp::<(usize, f32)>(drag_id));
+        if response.dragged() {
+            let fine = ui.input(|i| i.modifiers.shift);
+            let range = if fine { DRAG_RANGE * FINE_FACTOR } else { DRAG_RANGE };
+            let delta = -response.drag_delta().y / range;
+            // Start editing on the first real movement, so a click doesn't add a route.
+            if drag.is_none() && delta != 0.0 {
+                drag = match existing {
+                    Some(i) => {
+                        self.setter.begin_set_parameter(&slots[i].amount);
+                        Some((i, slots[i].amount.value()))
+                    }
+                    None => free().map(|i| {
+                        set_once(self.setter, &slots[i].source, slot_source);
+                        set_once(self.setter, &slots[i].dest, target.dest);
+                        self.setter.begin_set_parameter(&slots[i].amount);
+                        self.setter.set_parameter(&slots[i].amount, 0.0);
+                        (i, 0.0)
+                    }),
+                };
+            }
+            if let Some((i, amount)) = drag {
+                let next = (amount + delta).clamp(-1.0, 1.0);
+                self.setter.set_parameter(&slots[i].amount, next);
+                drag = Some((i, next));
+                ui.data_mut(|d| d.insert_temp(drag_id, (i, next)));
+                response.mark_changed();
+            }
+        }
+        if response.drag_stopped() {
+            if let Some((i, _)) = drag.take() {
+                self.setter.end_set_parameter(&slots[i].amount);
+            }
+            ui.data_mut(|d| d.remove::<(usize, f32)>(drag_id));
+        }
+
+        if response.double_clicked() {
+            for i in (0..slots.len()).filter(routed) {
+                set_once(self.setter, &slots[i].source, SlotSource::Off);
+                set_once(self.setter, &slots[i].dest, SlotDest::Off);
+                set_once(self.setter, &slots[i].amount, 0.0);
+            }
+            response.mark_changed();
+        }
+
+        // The readout names the route, like "LFO → Cutoff  +2.0 oct".
+        let amount = drag.map(|(_, a)| a).or_else(|| existing.map(|i| slots[i].amount.value()));
+        let value = match amount {
+            Some(a) => target.dest.format_amount(a),
+            None if free().is_none() => "Matrix full".into(),
+            None => "drag to add".into(),
+        };
+        let name = format!("{} → {}", slot_source.name(), target.dest.name());
+        crate::readout::report_text(ui, &name, value, response);
+    }
+}
+
+/// Change a parameter in one go, as one undo step.
+fn set_once<P: Param>(setter: &ParamSetter, param: &P, value: P::Plain) {
+    setter.begin_set_parameter(param);
+    setter.set_parameter(param, value);
+    setter.end_set_parameter(param);
+}
+
+/// Implementing egui's `Widget` trait is what lets us write `ui.add(Knob::new(...))`.
+impl<P: Param> egui::Widget for Knob<'_, P> {
+    fn ui(self, ui: &mut egui::Ui) -> egui::Response {
+        let style = &self.style;
+        // As wide as the knob or its name, whichever is wider, so long names like
+        // "Bend Range" don't run into the next knob in a row.
+        let label_width = ui
+            .painter()
+            .layout_no_wrap(
+                self.label.to_string(),
+                egui::FontId::proportional(style.label_text_size),
+                egui::Color32::WHITE,
+            )
+            .size()
+            .x;
+        let size = egui::vec2(
+            style.diameter.max(label_width),
+            style.diameter / 2.0 + style.arc_bottom() + LABEL_GAP + style.label_text_size,
+        );
+        // In mod mode, a knob that can't be modulated sits out: dimmed, and deaf to the
+        // mouse, so it's clear what dragging does right now.
+        let armed = crate::editor::armed_source(ui);
+        let inert = armed.is_some() && self.mod_target.is_none();
+        let sense = if inert { egui::Sense::hover() } else { egui::Sense::click_and_drag() };
+        let (rect, response) = ui.allocate_exact_size(size, sense);
+        let mut response = if inert {
+            response
+        } else {
+            response.on_hover_cursor(egui::CursorIcon::ResizeVertical)
+        };
+
+        // --- Mouse ---
+
+        match (armed, &self.mod_target) {
+            (None, _) => self.value_input(ui, &mut response),
+            (Some(source), Some(target)) => self.paint_route(ui, &mut response, source, target),
+            (Some(_), None) => {}
+        }
 
         // --- Drawing ---
 
@@ -221,8 +334,9 @@ impl<P: Param> egui::Widget for Knob<'_, P> {
 
             // Light up a little while the mouse is on it.
             let active = response.hovered() || response.dragged();
-            // A greyed-out knob (like Rate while the LFO is synced) is drawn much dimmer.
-            let enabled = ui.is_enabled();
+            // A greyed-out knob (like Rate while the LFO is synced), or one sitting out
+            // mod mode, is drawn much dimmer.
+            let enabled = ui.is_enabled() && !inert;
             let arc_color = if !enabled {
                 style.arc_color.gamma_multiply(0.3)
             } else if active {
@@ -257,18 +371,24 @@ impl<P: Param> egui::Widget for Knob<'_, P> {
             // The mod arc: drawn along the value arc's ring, after it so it sits on top
             // (see `mod_arc_width` for how much cyan it leaves showing). Even a tiny span
             // gets a few points of arc, so a route with a small amount is still visible.
-            if let Some((lo, hi)) = self.mod_span {
+            //
+            // In mod mode the span covers only the armed source (the x-ray view). A target
+            // it doesn't reach yet gets a faint full ring instead, as an invitation.
+            let mod_color = if enabled { style.mod_color } else { style.mod_color.gamma_multiply(0.3) };
+            let span = self.mod_target.as_ref().and_then(|t| t.span);
+            if armed.is_some() && span.is_none() && !inert && enabled {
+                painter.add(egui::Shape::line(
+                    arc_points(center, radius, 0.0, 1.0),
+                    egui::Stroke::new(1.5, mod_color.gamma_multiply(0.5)),
+                ));
+            }
+            if let Some((lo, hi)) = span {
                 let min_len = 0.02;
                 let (lo, hi) = if hi - lo < min_len {
                     let mid = ((lo + hi) / 2.0).clamp(min_len / 2.0, 1.0 - min_len / 2.0);
                     (mid - min_len / 2.0, mid + min_len / 2.0)
                 } else {
                     (lo, hi)
-                };
-                let mod_color = if enabled {
-                    style.mod_color
-                } else {
-                    style.mod_color.gamma_multiply(0.3)
                 };
                 painter.add(egui::Shape::line(
                     arc_points(center, radius, lo, hi),

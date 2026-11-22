@@ -8,7 +8,8 @@
 use crate::filter::FilterType;
 use crate::knob::Knob;
 use crate::slider::Slider;
-use crate::modulation::{dest_span, ModDest, ModSlotParams, Routes, SlotDest, SlotSource};
+use crate::knob::ModTarget;
+use crate::modulation::{mod_span, ModDest, ModSlotParams, ModSource, Routes, SlotDest, SlotSource};
 use crate::trail::Trail;
 use crate::{SynthParams, VoiceMode};
 use nice_plug::context::gui::GuiContext;
@@ -20,7 +21,7 @@ use std::sync::Arc;
 
 /// Window size in points. On a Retina screen egui draws at twice this many pixels.
 pub const WIDTH: f64 = 760.0;
-pub const HEIGHT: f64 = 710.0;
+pub const HEIGHT: f64 = 760.0;
 
 pub fn default_state() -> Arc<EguiEditorState> {
     EguiEditorState::from_size(LogicalSize::new(WIDTH, HEIGHT), 1.0)
@@ -123,6 +124,8 @@ impl JohnwaveEditor {
                 &setter,
                 &[(VoiceMode::Poly, "POLY"), (VoiceMode::Mono, "MONO")],
             );
+            ui.add_space(16.0);
+            mod_chips(ui);
             // Only reserve the readout's space here. It's drawn at the very end, after
             // every control has said whether the mouse is on it.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -132,13 +135,16 @@ impl JohnwaveEditor {
             });
         });
 
+        // Set by the chips in the header just above, so it's up to date for every knob.
+        let armed = armed_source(ui);
+
         // Three rows, following the sound: the source, what shapes it, what moves it.
 
         // Row 1: the oscillator (with its display) and tuning.
         row(ui, |ui| {
             group(ui, |ui| {
                 knob_section(ui, "Oscillator", |ui| {
-                    ui.add(Knob::new(&p.morph, &setter, "Shape").mod_span(mod_span(
+                    ui.add(Knob::new(&p.morph, &setter, "Shape").mod_target(mod_target(armed, &p.mod_slots, 
                         &routes,
                         ModDest::Morph,
                         |offset| p.morph.modulated_normalized_value() + offset,
@@ -158,7 +164,7 @@ impl JohnwaveEditor {
                 knob_row(ui, |ui| {
                     // Pitch routes show here, since Coarse is in semitones too. Its range is
                     // 48 semitones (−24..+24), so one semitone is 1/48 of the way round.
-                    ui.add(Knob::new(&p.coarse, &setter, "Coarse").bipolar().mod_span(mod_span(
+                    ui.add(Knob::new(&p.coarse, &setter, "Coarse").bipolar().mod_target(mod_target(armed, &p.mod_slots, 
                         &routes,
                         ModDest::Pitch,
                         |offset| p.coarse.modulated_normalized_value() + offset / 48.0,
@@ -186,7 +192,7 @@ impl JohnwaveEditor {
                 let osc2_on = p.osc2_on.value();
                 section_heading(ui, "Osc 2", |ui| toggle_button(ui, "ON", &p.osc2_on, &setter));
                 knob_row(ui, |ui| {
-                    ui.add_enabled(osc2_on, Knob::new(&p.osc2_morph, &setter, "Shape").mod_span(mod_span(
+                    ui.add_enabled(osc2_on, Knob::new(&p.osc2_morph, &setter, "Shape").mod_target(mod_target(armed, &p.mod_slots, 
                         &routes,
                         ModDest::Osc2Morph,
                         |offset| p.osc2_morph.modulated_normalized_value() + offset,
@@ -196,14 +202,14 @@ impl JohnwaveEditor {
                     // Pitch 2 routes show here. The range is 72 semitones (−36..+36).
                     ui.add_enabled(
                         osc2_on,
-                        Knob::new(&p.osc2_coarse, &setter, "Coarse").bipolar().mod_span(mod_span(
+                        Knob::new(&p.osc2_coarse, &setter, "Coarse").bipolar().mod_target(mod_target(armed, &p.mod_slots, 
                             &routes,
                             ModDest::Osc2Pitch,
                             |offset| p.osc2_coarse.modulated_normalized_value() + offset / 72.0,
                         )),
                     );
                     ui.add_enabled(osc2_on, Knob::new(&p.osc2_fine, &setter, "Fine").bipolar());
-                    ui.add_enabled(osc2_on, Knob::new(&p.osc_mix, &setter, "Mix").mod_span(mod_span(
+                    ui.add_enabled(osc2_on, Knob::new(&p.osc_mix, &setter, "Mix").mod_target(mod_target(armed, &p.mod_slots, 
                         &routes,
                         ModDest::OscMix,
                         |offset| p.osc_mix.modulated_normalized_value() + offset,
@@ -216,7 +222,7 @@ impl JohnwaveEditor {
                     // Detune and Width do nothing with a single voice.
                     let spread = p.unison_voices.value() > 1;
                     // Detune routes are in cents, on a skewed knob.
-                    ui.add_enabled(spread, Knob::new(&p.unison_detune, &setter, "Detune").mod_span(mod_span(
+                    ui.add_enabled(spread, Knob::new(&p.unison_detune, &setter, "Detune").mod_target(mod_target(armed, &p.mod_slots, 
                         &routes,
                         ModDest::UnisonDetune,
                         |offset| {
@@ -234,7 +240,7 @@ impl JohnwaveEditor {
             group(ui, |ui| {
                 knob_section(ui, "Filter", |ui| {
                     // Cutoff routes are in octaves: each one doubles (or halves) the Hz.
-                    ui.add(Knob::new(&p.cutoff, &setter, "Cutoff").mod_span(mod_span(
+                    ui.add(Knob::new(&p.cutoff, &setter, "Cutoff").mod_target(mod_target(armed, &p.mod_slots, 
                         &routes,
                         ModDest::Cutoff,
                         |offset| {
@@ -242,7 +248,7 @@ impl JohnwaveEditor {
                             p.cutoff.preview_normalized(hz)
                         },
                     )));
-                    ui.add(Knob::new(&p.resonance, &setter, "Res").mod_span(mod_span(
+                    ui.add(Knob::new(&p.resonance, &setter, "Res").mod_target(mod_target(armed, &p.mod_slots, 
                         &routes,
                         ModDest::Resonance,
                         |offset| p.resonance.modulated_normalized_value() + offset,
@@ -309,13 +315,13 @@ impl JohnwaveEditor {
                 section_heading(ui, "Crush", |ui| toggle_button(ui, "ON", &p.crush_on, &setter));
                 knob_row(ui, |ui| {
                     // Bits is a straight line from 1 to 16, so one bit is 1/15 of the way.
-                    ui.add_enabled(crush_on, Knob::new(&p.crush_bits, &setter, "Bits").mod_span(mod_span(
+                    ui.add_enabled(crush_on, Knob::new(&p.crush_bits, &setter, "Bits").mod_target(mod_target(armed, &p.mod_slots, 
                         &routes,
                         ModDest::CrushBits,
                         |offset| p.crush_bits.modulated_normalized_value() + offset / 15.0,
                     )));
                     // Steps routes are in octaves, like Cutoff.
-                    ui.add_enabled(crush_on, Knob::new(&p.crush_steps, &setter, "Steps").mod_span(mod_span(
+                    ui.add_enabled(crush_on, Knob::new(&p.crush_steps, &setter, "Steps").mod_target(mod_target(armed, &p.mod_slots, 
                         &routes,
                         ModDest::CrushSteps,
                         |offset| {
@@ -323,7 +329,7 @@ impl JohnwaveEditor {
                             p.crush_steps.preview_normalized(steps)
                         },
                     )));
-                    ui.add_enabled(crush_on, Knob::new(&p.crush_mix, &setter, "Mix").mod_span(mod_span(
+                    ui.add_enabled(crush_on, Knob::new(&p.crush_mix, &setter, "Mix").mod_target(mod_target(armed, &p.mod_slots, 
                         &routes,
                         ModDest::CrushMix,
                         |offset| p.crush_mix.modulated_normalized_value() + offset,
@@ -350,19 +356,96 @@ const AMOUNT_SLIDER_WIDTH: f32 = 160.0;
 
 /// The mod matrix: every slot as a row, `[Source] [Dest] [amount]`. A new slot is
 /// blank (both Off), and a slot only does something once both are set.
-/// Where a knob's mod arc reaches, as knob positions 0..1, or `None` if nothing is routed
-/// to `dest`. `to_position` turns an offset (in the destination's unit) into the knob
+/// What makes a knob the mod destination `dest`: how far the routes push it, as knob
+/// positions 0..1, plus the slots mod mode edits. With a source `armed`, only its routes
+/// count. `to_position` turns an offset (in the destination's unit) into the knob
 /// position its value would land on.
-fn mod_span(routes: &Routes, dest: ModDest, to_position: impl Fn(f32) -> f32) -> Option<(f32, f32)> {
-    dest_span(routes, dest)
-        .map(|(lo, hi)| (to_position(lo).clamp(0.0, 1.0), to_position(hi).clamp(0.0, 1.0)))
+fn mod_target<'a>(
+    armed: Option<ModSource>,
+    slots: &'a [ModSlotParams],
+    routes: &Routes,
+    dest: ModDest,
+    to_position: impl Fn(f32) -> f32,
+) -> ModTarget<'a> {
+    let span = mod_span(routes, dest, armed)
+        .map(|(lo, hi)| (to_position(lo).clamp(0.0, 1.0), to_position(hi).clamp(0.0, 1.0)));
+    ModTarget { dest: SlotDest::of(dest), span, slots }
 }
 
-fn mod_matrix(ui: &mut egui::Ui, slots: &[ModSlotParams], setter: &ParamSetter) {
-    ui.spacing_mut().item_spacing.y = 4.0;
-    for slot in slots {
-        route_row(ui, slot, setter);
+/// Where the armed source lives in egui's memory. It's window state, not a parameter:
+/// it isn't saved with the patch, and closing the window ends mod mode.
+fn armed_id() -> egui::Id {
+    egui::Id::unique("armed_mod_source")
+}
+
+/// The source armed for mod mode, or `None` when it's off.
+pub fn armed_source(ui: &egui::Ui) -> Option<ModSource> {
+    ui.data(|d| d.get_temp::<Option<ModSource>>(armed_id())).flatten()
+}
+
+fn set_armed(ui: &egui::Ui, source: Option<ModSource>) {
+    ui.data_mut(|d| d.insert_temp(armed_id(), source));
+}
+
+/// The mod mode chips: `LFO ENV VEL RAND`. Click one to arm it, and every knob shows
+/// just what that source does; drag a knob to set its amount. Click it again, or press
+/// Esc, to leave mod mode.
+fn mod_chips(ui: &mut egui::Ui) {
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        set_armed(ui, None);
     }
+    let armed = armed_source(ui);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for (source, label) in [
+            (ModSource::Lfo, "LFO"),
+            (ModSource::ModEnv, "ENV"),
+            (ModSource::Velocity, "VEL"),
+            (ModSource::Random, "RAND"),
+        ] {
+            let color = mod_pink();
+            let on = armed == Some(source);
+            let response = ui
+                .scope(|ui| {
+                    let selection = &mut ui.visuals_mut().selection;
+                    selection.bg_fill = color.gamma_multiply(0.3);
+                    selection.stroke.color = color;
+                    let text = egui::RichText::new(label).color(if on { color } else { color.gamma_multiply(0.75) });
+                    ui.selectable_label(on, text)
+                })
+                .inner
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            if response.clicked() {
+                set_armed(ui, if on { None } else { Some(source) });
+            }
+            let name = SlotSource::of(source).name();
+            let hint = if on { "drag a knob · Esc to exit".to_string() } else { "click to show & paint".to_string() };
+            crate::readout::report_text(ui, &format!("{name} mod"), hint, &response);
+        }
+    });
+}
+
+/// The mod colour: a dusky pink, far enough round the colour wheel from the cyan to
+/// stand apart. #C95DA7, which is 319°, 54%, 79% in a normal colour picker. Used for the
+/// knobs' mod arcs and the mod mode chips.
+pub fn mod_pink() -> egui::Color32 {
+    egui::Color32::from_rgb(0xC9, 0x5D, 0xA7)
+}
+
+/// The slots in two columns: 1–8 on the left, 9–16 on the right.
+fn mod_matrix(ui: &mut egui::Ui, slots: &[ModSlotParams], setter: &ParamSetter) {
+    let (left, right) = slots.split_at(slots.len().div_ceil(2));
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = GROUP_GAP;
+        for column in [left, right] {
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 4.0;
+                for slot in column {
+                    route_row(ui, slot, setter);
+                }
+            });
+        }
+    });
 }
 
 /// One slot: its source, destination and amount. The slider is greyed out until both
