@@ -77,6 +77,8 @@ pub struct VoiceParams {
     pub lfo_rate: f32,
     /// 0 = sine, ⅓ = triangle, ⅔ = saw, 1 = square.
     pub lfo_shape: f32,
+    /// LFO Fade in ms: positive fades in, negative fades out, 0 is Off.
+    pub lfo_fade_ms: f32,
     /// With LFO Retrigger off: the shared LFO's output this sample, used by every voice
     /// so they all move together. With retrigger on: `None`, and each voice runs its own.
     pub shared_lfo: Option<LfoOut>,
@@ -128,6 +130,9 @@ pub struct Voice {
     amp_env: Adsr,
     mod_env: Adsr,
     lfo: Lfo,
+    /// Seconds since this note started, for the LFO Fade. Stops counting at the
+    /// longest fade, since nothing changes after that.
+    since_start_s: f32,
     /// Morph after modulation, from the latest sample. Read by the plugin window.
     morph: f32,
     /// How loud this voice is right now (amp envelope times velocity, 0..1), from the
@@ -156,6 +161,7 @@ impl Default for Voice {
             amp_env: Adsr::default(),
             mod_env: Adsr::default(),
             lfo: Lfo::default(),
+            since_start_s: 0.0,
             level: 0.0,
             morph: 0.0,
             sources: ModSources::default(),
@@ -202,6 +208,10 @@ impl Voice {
         // levels, so a chord's voices don't all jump to the same place.
         self.lfo.seed(age);
         self.lfo.reset();
+        // The LFO Fade starts over with each note, even when RETRIG is off and the LFO
+        // itself keeps running. A legato pitch change doesn't come through here, so it
+        // carries on fading, like the envelopes do.
+        self.since_start_s = 0.0;
     }
 
     /// A random number in 0..1. Mixing in `age` stops a chord's voices all picking the
@@ -280,6 +290,7 @@ impl Voice {
         self.amp_env.reset();
         self.mod_env.reset();
         self.lfo.reset();
+        self.since_start_s = 0.0;
         self.velocity.reset(0.0);
     }
 
@@ -291,12 +302,17 @@ impl Voice {
         // 1. This voice's modulation sources for this sample.
         let own_lfo = self.lfo.next(p.lfo_rate, sample_rate, p.lfo_shape);
         let lfo = p.shared_lfo.unwrap_or(own_lfo);
+        // The fade scales both LFO outputs (wave and random), so every route from them
+        // fades together.
+        let fade = crate::lfo::fade_gain(p.lfo_fade_ms, self.since_start_s);
+        self.since_start_s =
+            (self.since_start_s + 1.0 / sample_rate).min(crate::lfo::MAX_FADE_MS / 1000.0);
         let velocity = self.velocity.next();
         let sources = ModSources {
-            lfo: lfo.wave,
+            lfo: lfo.wave * fade,
             mod_env: self.mod_env.next(&p.mod_env, sample_rate),
             velocity,
-            random: lfo.random,
+            random: lfo.random * fade,
         };
 
         self.sources = sources;
@@ -509,6 +525,7 @@ mod tests {
         unison_pan: [(1.0, 1.0); MAX_COPIES],
         lfo_rate: 1.0,
         lfo_shape: 0.0,
+        lfo_fade_ms: 0.0,
         shared_lfo: None,
         pitch_st: 0.0,
         filter_type: FilterType::LowPass,
@@ -981,5 +998,68 @@ mod tests {
         assert!((now - 66.0).abs() < 0.01, "at {now}");
         pool.mono_glide(60, SR, GLIDE);
         assert_eq!(pool.voices[0].pitch(), now);
+    }
+
+    /// The LFO and Random source levels a voice sees at each of `times_s` after its
+    /// note starts, with the shared LFO held at +1 (wave and random) and this Fade.
+    fn faded_lfo(fade_ms: f32, times_s: &[f32]) -> Vec<(f32, f32)> {
+        let held = Some(LfoOut { wave: 1.0, random: 1.0 });
+        let p = VoiceParams { shared_lfo: held, lfo_fade_ms: fade_ms, ..PARAMS };
+        let mut v = Voice::default();
+        v.start(60, 1.0, 1, SR, None);
+        let mut done = 0;
+        times_s
+            .iter()
+            .map(|&t| {
+                while done < (t * SR) as usize {
+                    v.next(&p, SR);
+                    done += 1;
+                }
+                (v.sources.lfo, v.sources.random)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn lfo_fade_off_gives_the_full_lfo_straight_away() {
+        for (lfo, random) in faded_lfo(0.0, &[0.0001, 0.5]) {
+            assert_eq!((lfo, random), (1.0, 1.0));
+        }
+    }
+
+    #[test]
+    fn lfo_fade_in_ramps_from_nothing_to_full() {
+        let got = faded_lfo(1_000.0, &[0.001, 0.5, 1.0, 3.0]);
+        assert!(got[0].0 < 0.01, "start {:?}", got[0]);
+        assert!((got[1].0 - 0.5).abs() < 0.01, "half {:?}", got[1]);
+        assert!((got[2].0 - 1.0).abs() < 0.01, "end {:?}", got[2]);
+        assert_eq!(got[3], (1.0, 1.0)); // and stays there
+        // Random fades along with the wave.
+        assert!((got[1].1 - 0.5).abs() < 0.01, "random {:?}", got[1]);
+    }
+
+    #[test]
+    fn lfo_fade_out_ramps_from_full_to_nothing() {
+        let got = faded_lfo(-1_000.0, &[0.001, 0.5, 1.0, 3.0]);
+        assert!(got[0].0 > 0.99, "start {:?}", got[0]);
+        assert!((got[1].0 - 0.5).abs() < 0.01, "half {:?}", got[1]);
+        assert!(got[2].0 < 0.01, "end {:?}", got[2]);
+        assert_eq!(got[3], (0.0, 0.0));
+    }
+
+    #[test]
+    fn lfo_fade_restarts_with_each_note() {
+        let held = Some(LfoOut { wave: 1.0, random: 1.0 });
+        let p = VoiceParams { shared_lfo: held, lfo_fade_ms: 1_000.0, ..PARAMS };
+        let mut v = Voice::default();
+        v.start(60, 1.0, 1, SR, None);
+        for _ in 0..(2.0 * SR) as usize {
+            v.next(&p, SR);
+        }
+        assert!(v.sources.lfo > 0.99);
+        // A new note on the same voice (still ringing) fades in again from nothing.
+        v.start(64, 1.0, 2, SR, None);
+        v.next(&p, SR);
+        assert!(v.sources.lfo < 0.01, "lfo {}", v.sources.lfo);
     }
 }

@@ -13,6 +13,22 @@
 use nice_plug::prelude::Enum;
 use std::f32::consts::TAU;
 
+/// The longest LFO Fade, either way: 10 s.
+pub const MAX_FADE_MS: f32 = 10_000.0;
+
+/// How much of the LFO a note gets, `since_start_s` seconds after it began, for an LFO
+/// Fade of `fade_ms`. Positive fades in from nothing to full over that time, negative
+/// starts at full and fades out to nothing, and under 1 ms either way is Off (always
+/// full).
+pub fn fade_gain(fade_ms: f32, since_start_s: f32) -> f32 {
+    let length_s = fade_ms.abs() / 1000.0;
+    if length_s < 0.001 {
+        return 1.0;
+    }
+    let t = (since_start_s / length_s).min(1.0);
+    if fade_ms > 0.0 { t } else { 1.0 - t }
+}
+
 /// How long a jump takes: 1.5 ms. Short enough to still sound like a hard step.
 const EDGE_S: f32 = 0.0015;
 

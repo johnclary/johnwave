@@ -93,6 +93,7 @@ What it moves is set in the [Mod Matrix](#mod-matrix).
 |---|---|---|---|
 | Shape | 0–100% | Sine | The LFO's wave, morphing sine → triangle → saw → square like the oscillator. |
 | Rate | 0.05–20 Hz | 1 Hz | Speed when not synced. Greyed out while SYNC is on. |
+| Fade | Out 10 s – Off – In 10 s | Off | Fades the LFO in (right of centre) or out (left) over this long from the start of each note. See [LFO fade](#lfo-fade). |
 | RETRIG | on / off | on | On: each new note restarts the LFO from the start of its cycle. Off: one free-running LFO shared by all notes. |
 | SYNC | on / off | off | Follow the DAW's tempo instead of Rate. |
 | Sync rate | 4 bars – 1/32 | 1/4 | Cycle length when synced, including dotted and triplet values. Greyed out while SYNC is off. |
@@ -328,6 +329,9 @@ Sources:
 - **Random**: the LFO's sample & hold, −1 to +1. A new random level each LFO cycle,
   following the LFO's Rate and SYNC. Each note gets its own levels while RETRIG is on.
 
+LFO and Random both follow the LFO's Fade, so with a fade set they ramp in or out over
+each note.
+
 Destinations, and what a slot's amount at 100% means for each:
 
 | Dest | Unit | At 100% |
@@ -353,6 +357,9 @@ Some starting points:
 - Mod Env → Cutoff, positive: a filter pluck on every note.
 - Mod Env → Drive, positive: a growl on each note's attack that settles to clean.
 - LFO → Shape: the wave slowly morphs, like a filter sweep from the source itself.
+- LFO → Pitch, small amount, Fade at In 800 ms: delayed vibrato that arrives once a
+  note is held.
+- LFO → Cutoff, Fade at Out 1 s: a wobble on the attack that settles to still.
 - Mod Env → Steps, around −4 oct: each note starts chiptune-crunchy and cleans up.
 - Velocity → Bits, negative: harder hits get grittier.
 - Mod Env → Pitch 2: osc 2 starts off-pitch and slides in, a "zap" on every note.
@@ -422,6 +429,28 @@ With SYNC on, the LFO's speed follows the DAW's tempo. With RETRIG off as well, 
 shared LFO also locks to the song position while the transport plays, so it lands in the
 same place on every bar. With RETRIG on, each note gets its own LFO that starts from the
 beginning of its cycle, which suits per-note wobbles that start the same way every time.
+
+### LFO fade
+
+Fade sets how much of the LFO each note gets over time, counted from the moment the note
+starts:
+
+- **Centre (Off)**: the full LFO straight away, as without a fade.
+- **Right (In)**: the LFO starts at nothing and rises steadily to full over the set time,
+  then stays there. The classic use is delayed vibrato, the way a singer or violinist
+  lets a held note start to waver.
+- **Left (Out)**: the LFO starts at full and falls steadily to nothing, then stays
+  still. Good for a wobble or flutter on the attack only.
+
+The knob is skewed, so short fades (under a second or so) get most of its travel.
+Double-click to return it to Off. You can also type a value like `in 500 ms`, `out 2 s`
+or `off`.
+
+Every note gets its own fade, even with RETRIG off: the shared LFO keeps running, but each
+note's share of it still starts from that note's beginning. A legato pitch change in mono
+doesn't restart the fade, just as it doesn't restart the envelopes. Fade scales the LFO's
+output, so it affects every route from LFO and Random at once, and the live tick in mod
+mode shows the faded value.
 
 ### The screens
 

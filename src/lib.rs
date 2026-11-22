@@ -121,6 +121,10 @@ pub struct SynthParams {
     /// Cycle length when synced.
     #[id = "lfo_div"]
     pub lfo_division: EnumParam<SyncDivision>,
+    /// Fades the LFO in (positive) or out (negative) over this many ms from each note's
+    /// start. 0 = Off.
+    #[id = "lfo_fade"]
+    pub lfo_fade: FloatParam,
 
     /// Which part of the sound the filter keeps (low-pass, high-pass, ...).
     #[id = "filter_type"]
@@ -239,6 +243,48 @@ fn ms_from_text(text: &str) -> Option<f32> {
     }
 }
 
+/// The LFO Fade knob: −10 s (fade out) to +10 s (fade in), Off in the middle. Skewed
+/// both ways from the centre, so short fades get most of the knob.
+fn lfo_fade_param() -> FloatParam {
+    FloatParam::new(
+        "LFO Fade",
+        0.0,
+        FloatRange::SymmetricalSkewed {
+            min: -lfo::MAX_FADE_MS,
+            max: lfo::MAX_FADE_MS,
+            factor: FloatRange::skew_factor(-2.0),
+            center: 0.0,
+        },
+    )
+    .with_value_to_string(Arc::new(fade_text))
+    .with_string_to_value(Arc::new(fade_from_text))
+}
+
+/// Show the fade as "In 500 ms", "Out 2.00 s" or "Off".
+fn fade_text(ms: f32) -> String {
+    if ms.abs() < 1.0 {
+        "Off".to_string()
+    } else if ms > 0.0 {
+        format!("In {}", ms_text(ms))
+    } else {
+        format!("Out {}", ms_text(-ms))
+    }
+}
+
+/// Read a typed fade: "in 500 ms", "out 2 s", "off", or a signed time ("-2 s").
+fn fade_from_text(text: &str) -> Option<f32> {
+    let s = text.trim().to_lowercase();
+    if s == "off" {
+        Some(0.0)
+    } else if let Some(rest) = s.strip_prefix("out") {
+        ms_from_text(rest).map(|ms| -ms.abs())
+    } else if let Some(rest) = s.strip_prefix("in") {
+        ms_from_text(rest).map(f32::abs)
+    } else {
+        ms_from_text(&s)
+    }
+}
+
 /// The Porta knob: 0–2 s, skewed like the envelope times, with 0 shown as Off.
 fn porta_param() -> FloatParam {
     FloatParam::new(
@@ -331,6 +377,7 @@ impl Default for SynthParams {
             lfo_retrigger: BoolParam::new("LFO Retrigger", true),
             lfo_sync: BoolParam::new("LFO Sync", false),
             lfo_division: EnumParam::new("LFO Sync Rate", SyncDivision::Quarter),
+            lfo_fade: lfo_fade_param(),
 
             cutoff: FloatParam::new(
                 "Cutoff",
@@ -867,6 +914,7 @@ impl Plugin for Johnwave {
                 unison_pan: unison::pans(unison_voices, self.params.unison_width.smoothed.next()),
                 lfo_rate,
                 lfo_shape,
+                lfo_fade_ms: self.params.lfo_fade.value(),
                 shared_lfo: shared_lfo_on.then_some(shared),
                 pitch_st: pitch_offset_st(
                     self.bend.next(),
@@ -1088,5 +1136,16 @@ mod tests {
         assert!(close(pitch_offset_st(0.5, 2.0, -12.0, 0.0), -12.0));
         assert!(close(pitch_offset_st(0.5, 2.0, 0.0, 100.0), 1.0)); // 100 cents = 1 st
         assert!(close(pitch_offset_st(1.0, 2.0, 7.0, -50.0), 8.5));
+    }
+
+    #[test]
+    fn lfo_fade_reads_and_writes_as_in_out_or_off() {
+        assert_eq!(fade_text(0.0), "Off");
+        assert_eq!(fade_text(500.0), "In 500 ms");
+        assert_eq!(fade_text(-2_000.0), "Out 2.00 s");
+        assert_eq!(fade_from_text("off"), Some(0.0));
+        assert_eq!(fade_from_text("In 500 ms"), Some(500.0));
+        assert_eq!(fade_from_text("out 2 s"), Some(-2_000.0));
+        assert_eq!(fade_from_text("-1.5 s"), Some(-1_500.0));
     }
 }

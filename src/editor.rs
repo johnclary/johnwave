@@ -331,6 +331,8 @@ impl JohnwaveEditor {
                     ui.add(Knob::new(&p.lfo_shape, &setter, "Shape"));
                     knob_wave(ui, |phase| crate::lfo::wave(phase, lfo_shape, KNOB_WAVE_EDGE));
                     ui.add_enabled(!synced, Knob::new(&p.lfo_rate, &setter, "Rate"));
+                    // Right of centre fades the LFO in on each note, left fades it out.
+                    ui.add(Knob::new(&p.lfo_fade, &setter, "Fade").bipolar());
                 });
                 ui.add_space(6.0);
                 // The sync rate sits right after Sync, since that's what it belongs to.
