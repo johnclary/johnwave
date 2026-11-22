@@ -7,7 +7,6 @@
 
 use crate::filter::{FilterSlope, FilterType};
 use crate::knob::Knob;
-use crate::slider::Slider;
 use crate::knob::ModTarget;
 use crate::modulation::{mod_offset, mod_span, LiveSources, ModDest, ModSlotParams, ModSource, Routes, SlotDest, SlotSource};
 use crate::trail::Trail;
@@ -386,9 +385,6 @@ impl JohnwaveEditor {
     }
 }
 
-/// Width of a route's amount slider.
-const AMOUNT_SLIDER_WIDTH: f32 = 160.0;
-
 /// What makes a knob the mod destination `dest`: how far the routes push it, as knob
 /// positions 0..1, plus the slots mod mode edits. With a source `armed`, only its routes
 /// count, and `live` is where it's pushing the knob right now (the live tick).
@@ -476,106 +472,6 @@ fn mod_chips(ui: &mut egui::Ui) {
 /// knobs' mod arcs and the mod mode chips.
 pub fn mod_pink() -> egui::Color32 {
     egui::Color32::from_rgb(0xC9, 0x5D, 0xA7)
-}
-
-/// The mod matrix: every slot as a row, `[Source] [Dest] [amount]`. A new slot is
-/// blank (both Off), and a slot only does something once both are set. The slots sit
-/// in two columns: 1–8 on the left, 9–16 on the right.
-fn mod_matrix(ui: &mut egui::Ui, slots: &[ModSlotParams], setter: &ParamSetter) {
-    let (left, right) = slots.split_at(slots.len().div_ceil(2));
-    ui.horizontal_top(|ui| {
-        ui.spacing_mut().item_spacing.x = GROUP_GAP;
-        for column in [left, right] {
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 4.0;
-                for slot in column {
-                    route_row(ui, slot, setter);
-                }
-            });
-        }
-    });
-}
-
-/// One slot: its source, destination and amount. The slider is greyed out until both
-/// are set, since it does nothing before then.
-fn route_row(ui: &mut egui::Ui, slot: &ModSlotParams, setter: &ParamSetter) {
-    let dest = slot.dest.value();
-    let routed = slot.source.value() != SlotSource::Off && dest != SlotDest::Off;
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        cycler(ui, &slot.source, setter, SlotSource::Off);
-        cycler(ui, &slot.dest, setter, SlotDest::Off);
-        let amount = dest.format_amount(slot.amount.value());
-        ui.add_enabled(
-            routed,
-            Slider::new(&slot.amount, setter, AMOUNT_SLIDER_WIDTH)
-                .bipolar()
-                .readout_value(amount),
-        );
-    });
-}
-
-/// A button that steps through an enum's choices: click for the next one, right-click
-/// for the previous one. It wraps around at the ends. The `blank` choice (Off) shows
-/// as an empty outline, and any other choice lights up. Its name and value show in the
-/// readout box.
-fn cycler<T: Enum + PartialEq + Copy + 'static>(
-    ui: &mut egui::Ui,
-    param: &EnumParam<T>,
-    setter: &ParamSetter,
-    blank: T,
-) {
-    let value = param.value();
-    let current = value.to_index();
-    let count = T::variants().len();
-    let is_blank = value == blank;
-    let text = if is_blank { "" } else { T::variants()[current] };
-    // A fixed width, so the things after it don't jump around as the name changes.
-    let response = ui
-        .scope(|ui| {
-            cyan_selection(ui);
-            ui.add_sized([CYCLER_WIDTH, 20.0], egui::Button::new(text).selected(!is_blank))
-        })
-        .inner
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
-
-    let step: isize = if response.clicked() {
-        1
-    } else if response.secondary_clicked() {
-        -1
-    } else {
-        0
-    };
-    if step != 0 {
-        let next = (current as isize + step).rem_euclid(count as isize) as usize;
-        set(setter, param, T::from_index(next));
-    }
-    crate::readout::report(ui, param, &response);
-}
-
-/// Wide enough for the longest choice ("Crush Mix").
-const CYCLER_WIDTH: f32 = 80.0;
-
-/// Space between groups in a row, and between rows.
-const GROUP_GAP: f32 = 32.0;
-const ROW_GAP: f32 = 10.0;
-
-/// One row of groups, side by side, lined up along their tops.
-fn row(ui: &mut egui::Ui, groups: impl FnOnce(&mut egui::Ui)) {
-    ui.add_space(ROW_GAP);
-    ui.horizontal_top(|ui| {
-        ui.spacing_mut().item_spacing.x = GROUP_GAP;
-        groups(ui);
-    });
-}
-
-/// One group in a row: its contents stacked top to bottom.
-fn group(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
-    ui.vertical(|ui| {
-        // Back to normal spacing inside the group (`row` widened it for between groups).
-        ui.spacing_mut().item_spacing.x = 8.0;
-        contents(ui);
-    });
 }
 
 /// The readout box is a flat strip in the header.
@@ -872,23 +768,6 @@ fn sub_label(ui: &mut egui::Ui, text: &str) {
             .color(panel_gray(ui)),
     );
     ui.add_space(2.0);
-}
-
-/// A titled block: a bold title, then its knobs side by side.
-fn knob_section(ui: &mut egui::Ui, title: &str, knobs: impl FnOnce(&mut egui::Ui)) {
-    section_heading(ui, title, |_| {});
-    knob_row(ui, knobs);
-}
-
-/// A section's bold title, with room for something small beside it (`extra`).
-fn section_heading(ui: &mut egui::Ui, title: &str, extra: impl FnOnce(&mut egui::Ui)) {
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(title).strong());
-        ui.add_space(6.0);
-        extra(ui);
-    });
-    ui.add_space(4.0);
 }
 
 /// Knobs side by side.

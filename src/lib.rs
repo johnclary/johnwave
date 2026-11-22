@@ -13,7 +13,6 @@ mod modulation;
 mod notes;
 mod osc;
 mod readout;
-mod slider;
 mod trail;
 mod unison;
 mod voice;
