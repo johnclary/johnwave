@@ -24,8 +24,10 @@ use std::sync::Arc;
 /// The width is just what the three columns need, so the right one ends at the edge.
 pub const WIDTH: f64 =
     (2.0 * MARGIN_X + LEFT_COLUMN_WIDTH + MIDDLE_COLUMN_WIDTH + RIGHT_COLUMN_WIDTH + 2.0 * COLUMN_GAP) as f64;
-/// A first guess, to be tuned once the layout's been seen.
-pub const HEIGHT: f64 = 520.0;
+/// Just tall enough for the tallest column (the left one, ending with the filter), with
+/// the same 12-point margin at the bottom as at the top. Measured in the window: if the
+/// panels grow, this needs measuring again.
+pub const HEIGHT: f64 = 481.0;
 
 pub fn default_state() -> Arc<EguiEditorState> {
     EguiEditorState::from_size(LogicalSize::new(WIDTH, HEIGHT), 1.0)
