@@ -51,6 +51,8 @@ folder at `target/bundled` and just rebuild + rescan.
 ## Todo
 
 - readout bugginess in mod mode
+  - show mod adjustments in readout
+  - "mod wizard" text is too long to fit in readout
 - second lfo and second mod env (and/or use amp env as a mod source)
 - ability to type in param values (with left click?)
 - a second filter
