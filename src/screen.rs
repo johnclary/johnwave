@@ -24,11 +24,24 @@ pub struct ScreenWave {
     /// How much of each oscillator is in the mix. With Osc 2 off, 1 and 0.
     pub gain1: f32,
     pub gain2: f32,
+    /// The filter's cutoff (Hz) and resonance (0..1), after modulation, for the FREQ
+    /// view's curve.
+    pub cutoff_hz: f32,
+    pub resonance: f32,
 }
 
 impl Default for ScreenWave {
     fn default() -> Self {
-        Self { morph: 0.0, level: 0.0, morph2: 0.0, ratio2: 1.0, gain1: 1.0, gain2: 0.0 }
+        Self {
+            morph: 0.0,
+            level: 0.0,
+            morph2: 0.0,
+            ratio2: 1.0,
+            gain1: 1.0,
+            gain2: 0.0,
+            cutoff_hz: 20_000.0,
+            resonance: 0.0,
+        }
     }
 }
 
@@ -64,6 +77,9 @@ impl ScreenWave {
             || (self.morph2 - other.morph2).abs() > 0.002
             || (self.ratio2 - other.ratio2).abs() > 0.001
             || (self.gain2 - other.gain2).abs() > 0.005
+            // Cutoff by how far it moved in octaves, since it's heard that way.
+            || (self.cutoff_hz / other.cutoff_hz).log2().abs() > 0.005
+            || (self.resonance - other.resonance).abs() > 0.002
     }
 }
 
@@ -77,6 +93,10 @@ pub struct SharedScreen {
     ratio2: AtomicF32,
     gain1: AtomicF32,
     gain2: AtomicF32,
+    cutoff_hz: AtomicF32,
+    resonance: AtomicF32,
+    /// The host's sample rate, which the filter curve needs. Kept while silent too.
+    sample_rate: AtomicF32,
 }
 
 impl Default for SharedScreen {
@@ -89,6 +109,9 @@ impl Default for SharedScreen {
             ratio2: AtomicF32::new(w.ratio2),
             gain1: AtomicF32::new(w.gain1),
             gain2: AtomicF32::new(w.gain2),
+            cutoff_hz: AtomicF32::new(w.cutoff_hz),
+            resonance: AtomicF32::new(w.resonance),
+            sample_rate: AtomicF32::new(48_000.0),
         }
     }
 }
@@ -106,6 +129,8 @@ impl SharedScreen {
         self.ratio2.store(w.ratio2, Ordering::Relaxed);
         self.gain1.store(w.gain1, Ordering::Relaxed);
         self.gain2.store(w.gain2, Ordering::Relaxed);
+        self.cutoff_hz.store(w.cutoff_hz, Ordering::Relaxed);
+        self.resonance.store(w.resonance, Ordering::Relaxed);
         self.morph.store(w.morph, Ordering::Relaxed);
     }
 
@@ -122,7 +147,18 @@ impl SharedScreen {
             ratio2: self.ratio2.load(Ordering::Relaxed),
             gain1: self.gain1.load(Ordering::Relaxed),
             gain2: self.gain2.load(Ordering::Relaxed),
+            cutoff_hz: self.cutoff_hz.load(Ordering::Relaxed),
+            resonance: self.resonance.load(Ordering::Relaxed),
         })
+    }
+
+    /// Called by the audio thread when the sample rate is known.
+    pub fn set_sample_rate(&self, sample_rate: f32) {
+        self.sample_rate.store(sample_rate, Ordering::Relaxed);
+    }
+
+    pub fn sample_rate(&self) -> f32 {
+        self.sample_rate.load(Ordering::Relaxed)
     }
 }
 
@@ -235,7 +271,16 @@ mod tests {
     fn shared_screen_round_trips() {
         let shared = SharedScreen::default();
         assert_eq!(shared.load(), None);
-        let w = ScreenWave { morph: 0.3, level: 0.8, morph2: 0.6, ratio2: 2.0, gain1: 0.7, gain2: 0.7 };
+        let w = ScreenWave {
+            morph: 0.3,
+            level: 0.8,
+            morph2: 0.6,
+            ratio2: 2.0,
+            gain1: 0.7,
+            gain2: 0.7,
+            cutoff_hz: 800.0,
+            resonance: 0.4,
+        };
         shared.store(Some(w));
         assert_eq!(shared.load(), Some(w));
         shared.store(None);

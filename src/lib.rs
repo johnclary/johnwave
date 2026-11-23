@@ -1,6 +1,6 @@
 use nice_plug::prelude::*;
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 
 mod crush;
@@ -221,6 +221,12 @@ pub struct SynthParams {
     pub screen_mix: Arc<AtomicBool>,
     #[persist = "screen_out"]
     pub screen_out: Arc<AtomicBool>,
+    /// The FREQ view's filter curve.
+    #[persist = "screen_filter"]
+    pub screen_filter: Arc<AtomicBool>,
+    /// Which view the screen shows: `editor::SCREEN_VIEW_WAVE` or `SCREEN_VIEW_FREQ`.
+    #[persist = "screen_view"]
+    pub screen_view: Arc<AtomicU8>,
 }
 
 /// An envelope time knob in milliseconds. It's skewed so the short times get more
@@ -512,6 +518,8 @@ impl Default for SynthParams {
             screen_osc2: Arc::new(AtomicBool::new(true)),
             screen_mix: Arc::new(AtomicBool::new(true)),
             screen_out: Arc::new(AtomicBool::new(true)),
+            screen_filter: Arc::new(AtomicBool::new(true)),
+            screen_view: Arc::new(AtomicU8::new(editor::SCREEN_VIEW_WAVE)),
         }
     }
 }
@@ -880,6 +888,7 @@ impl Plugin for Johnwave {
         _context: &mut impl ActivateContext<Self>,
     ) -> bool {
         self.sample_rate = buffer_config.sample_rate;
+        self.display.set_sample_rate(self.sample_rate);
         true
     }
 
@@ -916,9 +925,12 @@ impl Plugin for Johnwave {
             self.mode = mode;
         }
 
-        // Only keep the output for the screen while the window is open with OUT on.
-        // Starting again, whatever's left in the ring is from earlier, so it's dropped.
-        let capturing = self.editor_state.is_open() && self.params.screen_out.load(Ordering::Relaxed);
+        // Only keep the output for the screen while the window is open showing the OUT
+        // line. Starting again, whatever's left in the ring is from earlier, so it's
+        // dropped.
+        let capturing = self.editor_state.is_open()
+            && self.params.screen_out.load(Ordering::Relaxed)
+            && self.params.screen_view.load(Ordering::Relaxed) == editor::SCREEN_VIEW_WAVE;
         if capturing && !self.capturing {
             self.capture.restart();
         }

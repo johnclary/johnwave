@@ -400,7 +400,16 @@ impl Voice {
         let drive = p.filter_drive + off.drive;
 
         let amp = self.amp_env.next(&p.amp_env, sample_rate);
-        self.screen = ScreenWave { morph, level: amp * velocity, morph2, ratio2, gain1, gain2 };
+        self.screen = ScreenWave {
+            morph,
+            level: amp * velocity,
+            morph2,
+            ratio2,
+            gain1,
+            gain2,
+            cutoff_hz: cutoff,
+            resonance,
+        };
 
         // Each side gets its own crusher and filter. Fed the same signal (one copy, or
         // Width at 0) they come out identical.

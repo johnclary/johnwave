@@ -167,6 +167,45 @@ impl Filter {
     }
 }
 
+/// How much the clean filter (Drive at 0%) lets through at `freq`: 1 is unchanged,
+/// 0.5 is half as loud (about −6 dB), above 1 is boosted (the resonant peak). For drawing
+/// the filter's curve, so the window doesn't have to run the filter to find out.
+///
+/// It's worked out from the filter's own formulas: the SVF behaves exactly like a
+/// classic analog filter whose frequencies have been squeezed to fit below the top of the
+/// sample rate, and `w` undoes that squeeze. At `w` = 1 you're at the cutoff.
+pub fn response(
+    kind: FilterType,
+    slope: FilterSlope,
+    cutoff_hz: f32,
+    resonance: f32,
+    freq: f32,
+    sample_rate: f32,
+) -> f32 {
+    // The same limits `process` uses.
+    let cutoff = cutoff_hz.clamp(10.0, 0.45 * sample_rate);
+    let g = (PI * cutoff / sample_rate).tan();
+    let res = resonance.clamp(0.0, 1.0);
+    let w = (PI * freq.min(0.5 * sample_rate) / sample_rate).tan() / g;
+    // One stage with damping `k`. Each type is a different top line over the same
+    // bottom line, which is where the peak comes from: it's smallest at the cutoff, and
+    // smaller still with less damping.
+    let stage = |k: f32| {
+        let bottom = ((1.0 - w * w).powi(2) + (k * w).powi(2)).sqrt();
+        let top = match kind {
+            FilterType::LowPass => 1.0,
+            FilterType::HighPass => w * w,
+            FilterType::BandPass => k * w,
+            FilterType::Notch => (1.0 - w * w).abs(),
+        };
+        top / bottom
+    };
+    match slope {
+        FilterSlope::Db12 => stage(K_MAX + (K_MIN - K_MAX) * res),
+        FilterSlope::Db24 => stage(K_24_FIRST) * stage(K_24_SECOND + (K_MIN - K_24_SECOND) * res),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,6 +240,24 @@ mod tests {
             }
         }
         peak
+    }
+
+    #[test]
+    fn response_matches_the_real_filter() {
+        // Every type and slope, gentle and resonant, below, at and above the cutoff.
+        for kind in [FilterType::LowPass, FilterType::HighPass, FilterType::BandPass, FilterType::Notch] {
+            for slope in [FilterSlope::Db12, FilterSlope::Db24] {
+                for res in [0.0, 0.7] {
+                    for freq in [200.0, 1_000.0, 4_000.0] {
+                        let measured = gain_sloped(kind, slope, freq, 1_000.0, res);
+                        let worked_out = response(kind, slope, 1_000.0, res, freq, SR);
+                        // A notch right on its cutoff is (nearly) silent either way.
+                        let close = (measured - worked_out).abs() < 0.02 * worked_out.max(0.05);
+                        assert!(close, "{kind:?} {slope:?} res {res} at {freq} Hz: {measured} vs {worked_out}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

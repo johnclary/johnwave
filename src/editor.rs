@@ -16,7 +16,7 @@ use nice_plug::context::gui::GuiContext;
 use nice_plug::editor::dpi::LogicalSize;
 use nice_plug::prelude::{BoolParam, Enum, EnumParam, Param, ParamSetter};
 use nice_plug_egui::{EguiEditorState, Frame, NiceEguiApp, RepaintNotifier};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 
 /// Window size in points. On a Retina screen egui draws at twice this many pixels.
@@ -330,12 +330,13 @@ impl JohnwaveEditor {
             // Right column: the scope, then the effects-ish extras.
             column(ui, RIGHT_COLUMN_WIDTH, |ui| {
                 // The screen sits in a panel of its own, with a tight bezel, like a
-                // monitor in its housing. It's shorter by whatever the title and bezel
-                // take, so the column stays the same height.
+                // monitor in its housing, and the WAVE | FREQ switch under it.
                 let title_height = panel_title(ui, "Scope").size().y;
                 let height = SCOPE_HEIGHT - title_height - SCOPE_BEZEL;
                 panel_with(ui, "Scope", SCOPE_BEZEL, SCOPE_BEZEL, 0.0, |ui| {
-                    osc_display(ui, p, self.display.load(), &self.phosphor, &self.trail, height);
+                    osc_display(ui, p, self.display.load(), &self.phosphor, &self.trail, self.display.sample_rate(), height);
+                    ui.add_space(SCOPE_BEZEL);
+                    view_switch(ui, &p.screen_view, &[(SCREEN_VIEW_WAVE, "WAVE"), (SCREEN_VIEW_FREQ, "FREQ")]);
                 });
 
                 panel(ui, "Unison", |ui| {
@@ -536,6 +537,7 @@ fn osc_display(
     wave: Option<ScreenWave>,
     phosphor: &Phosphor,
     trail: &Trail,
+    sample_rate: f32,
     height: f32,
 ) {
     let size = egui::vec2(ui.available_width(), height);
@@ -548,10 +550,29 @@ fn osc_display(
     let faint = ui.visuals().weak_text_color().gamma_multiply(0.5);
     screen_frame(&painter, rect, faint);
 
-    // The chips across the top, inside the frame, and the waves in the space below.
+    // The chips across the top, inside the frame, and the view in the space below.
     let inner = rect.shrink(SCREEN_PADDING);
-    let (chip_row, waves) = inner.split_top_bottom_at_y(inner.top() + SCREEN_CHIP_ROW);
+    let (chip_row, view) = inner.split_top_bottom_at_y(inner.top() + SCREEN_CHIP_ROW);
     screen_chips(ui, chip_row, p);
+    if p.screen_view.load(Ordering::Relaxed) == SCREEN_VIEW_FREQ {
+        freq_view(&painter, view, p, wave, sample_rate, faint);
+    } else {
+        wave_view(ui, &painter, view, p, wave, phosphor, trail, faint);
+    }
+}
+
+/// The WAVE view: two cycles of Osc 1 across, with each line the chips switch on.
+#[allow(clippy::too_many_arguments)]
+fn wave_view(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    waves: egui::Rect,
+    p: &SynthParams,
+    wave: Option<ScreenWave>,
+    phosphor: &Phosphor,
+    trail: &Trail,
+    faint: egui::Color32,
+) {
     let show = |flag: &AtomicBool| flag.load(Ordering::Relaxed);
     let (show1, show2, show_mix) = (show(&p.screen_osc1), show(&p.screen_osc2), show(&p.screen_mix));
     let show_out = show(&p.screen_out);
@@ -570,7 +591,7 @@ fn osc_display(
         for (ghost, fade) in trail.ghosts(now) {
             let w = ghost.wave;
             let color = neon_color(w.morph).gamma_multiply(TRAIL_STRENGTH * fade * fade);
-            screen_line(&painter, waves, |x| w.mix(x), color, 1.0);
+            screen_line(painter, waves, |x| w.mix(x), color, 1.0);
         }
     }
 
@@ -590,15 +611,15 @@ fn osc_display(
     };
     // Without Osc 2, Osc 1 alone *is* the mix, so it's only drawn when the mix isn't.
     if show1 && (w.has_osc2() || !show_mix) {
-        screen_line(&painter, waves, |x| w.osc1(x) * w.gain1 * w.level, part_color, part_width);
+        screen_line(painter, waves, |x| w.osc1(x) * w.gain1 * w.level, part_color, part_width);
     }
     if show2 && w.has_osc2() {
-        screen_line(&painter, waves, |x| w.osc2(x) * w.gain2 * w.level, part_color, part_width);
+        screen_line(painter, waves, |x| w.osc2(x) * w.gain2 * w.level, part_color, part_width);
     }
     // Then the two added up, bold on top. Scaled by the level, so it swells on attack
     // and shrinks away on release.
     if show_mix {
-        screen_line(&painter, waves, |x| w.mix(x), color, 2.0);
+        screen_line(painter, waves, |x| w.mix(x), color, 2.0);
     }
     // Last and on top, the real output: what the voices actually played, after Crush,
     // the filter, unison and any other notes, lined up with Osc 1's cycles. Without any
@@ -608,10 +629,77 @@ fn osc_display(
         if let Some(out) = phosphor.line() {
             let last = (out.len() - 1) as f32;
             let curve = |x: f32| out[(x * last).round() as usize].clamp(-1.0, 1.0);
-            neon_line_glow(&painter, waves, curve, OUT_COLOR, 1.5, OUT_GLOW);
+            neon_line_glow(painter, waves, curve, OUT_COLOR, 1.5, OUT_GLOW);
         }
     }
 }
+
+/// The FREQ view: low notes on the left, high on the right (20 Hz to 20 kHz, each
+/// octave the same width, the way pitch is heard), loudness up the side in decibels.
+/// It shows the filter's curve: what it lets through at each frequency. While a note
+/// plays the curve follows that note's cutoff and resonance, mod routes and all;
+/// otherwise it shows the knobs.
+fn freq_view(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    p: &SynthParams,
+    wave: Option<ScreenWave>,
+    sample_rate: f32,
+    faint: egui::Color32,
+) {
+    // Where a frequency sits across, 0..1, and how a level in dB maps to a line value.
+    let across = |hz: f32| (hz / FREQ_LOW).log2() / (FREQ_HIGH / FREQ_LOW).log2();
+    let v_of_db = |db: f32| {
+        let middle = (DB_TOP + DB_BOTTOM) / 2.0;
+        ((db - middle) / ((DB_TOP - DB_BOTTOM) / 2.0)).clamp(-1.0, 1.0)
+    };
+
+    // Faint gridlines: 0 dB (unchanged) across, and 100 Hz, 1 kHz and 10 kHz up, each
+    // with a tiny label at the bottom.
+    let grid = egui::Stroke::new(1.0, faint.gamma_multiply(0.6));
+    let zero_y = line_y(rect, v_of_db(0.0));
+    painter.line_segment([egui::pos2(rect.left(), zero_y), egui::pos2(rect.right(), zero_y)], grid);
+    let label_font = egui::FontId::proportional(FREQ_LABEL_SIZE);
+    for (hz, label) in [(100.0, "100"), (1_000.0, "1k"), (10_000.0, "10k")] {
+        let x = rect.left() + across(hz) * rect.width();
+        painter.line_segment([egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())], grid);
+        painter.text(
+            egui::pos2(x + 2.0, rect.bottom()),
+            egui::Align2::LEFT_BOTTOM,
+            label,
+            label_font.clone(),
+            faint,
+        );
+    }
+
+    if p.screen_filter.load(Ordering::Relaxed) {
+        let (cutoff, resonance) = match wave {
+            Some(w) => (w.cutoff_hz, w.resonance),
+            None => (p.cutoff.value(), p.resonance.value()),
+        };
+        let (kind, slope) = (p.filter_type.value(), p.filter_slope.value());
+        let curve = |x: f32| {
+            let hz = FREQ_LOW * (FREQ_HIGH / FREQ_LOW).powf(x);
+            let gain = crate::filter::response(kind, slope, cutoff, resonance, hz, sample_rate);
+            // 20·log10 turns a gain into decibels. The tiny floor keeps a notch's
+            // silent middle from being minus infinity.
+            v_of_db(20.0 * gain.max(1e-6).log10())
+        };
+        neon_curve(painter, rect, curve, FREQ_STEPS, cyan(), 2.0, 1.0);
+    }
+}
+
+/// The FREQ view's range across, in Hz.
+const FREQ_LOW: f32 = 20.0;
+const FREQ_HIGH: f32 = 20_000.0;
+/// Its range up the side, in dB. 0 dB (unchanged) sits 40% of the way down, leaving
+/// room above for a resonant peak (up to +20 dB) and below for the cut.
+const DB_TOP: f32 = 24.0;
+const DB_BOTTOM: f32 = -36.0;
+/// Segments in the filter curve: enough to catch a sharp resonant peak.
+const FREQ_STEPS: usize = 400;
+/// The frequency labels' text size.
+const FREQ_LABEL_SIZE: f32 = 9.0;
 
 /// How many points the OUT line is made of. About one per screen point across.
 const OUT_POINTS: usize = 240;
@@ -620,9 +708,14 @@ const OUT_COLOR: egui::Color32 = egui::Color32::from_rgb(0xE6, 0xEE, 0xF2);
 /// How strong the OUT line's glow is, compared with the neon lines'.
 const OUT_GLOW: f32 = 0.5;
 
-/// The `OSC 1  OSC 2  MIX  OUT` chips along the top of the screen. Each switches its line on
-/// and off. Osc 2's greys out while Osc 2 is switched off. They're window settings, not
-/// sound, so they're saved with the patch but aren't parameters.
+/// Which view the screen shows (`SynthParams::screen_view`).
+pub const SCREEN_VIEW_WAVE: u8 = 0;
+pub const SCREEN_VIEW_FREQ: u8 = 1;
+
+/// The chips along the top of the screen. In WAVE, `OSC 1  OSC 2  MIX  OUT` switch each line on and off (Osc 2's greys out
+/// while Osc 2 is switched off). In FREQ, `FILTER` does the same for the filter's curve.
+/// They're window settings, not sound, so they're saved with the patch but aren't
+/// parameters.
 fn screen_chips(ui: &mut egui::Ui, row: egui::Rect, p: &SynthParams) {
     let mut chips = ui.new_child(egui::UiBuilder::new().max_rect(row));
     // Like the other buttons, they fade and stop taking clicks in mod mode.
@@ -631,10 +724,39 @@ fn screen_chips(ui: &mut egui::Ui, row: egui::Rect, p: &SynthParams) {
             ui.spacing_mut().item_spacing.x = 4.0;
             ui.spacing_mut().button_padding = egui::vec2(4.0, 0.0);
             cyan_selection(ui);
-            screen_chip(ui, "OSC 1", &p.screen_osc1, true);
-            screen_chip(ui, "OSC 2", &p.screen_osc2, p.osc2_on.value());
-            screen_chip(ui, "MIX", &p.screen_mix, true);
-            screen_chip(ui, "OUT", &p.screen_out, true);
+            let view = p.screen_view.load(Ordering::Relaxed);
+            if view == SCREEN_VIEW_FREQ {
+                screen_chip(ui, "FILTER", &p.screen_filter, true);
+            } else {
+                screen_chip(ui, "OSC 1", &p.screen_osc1, true);
+                screen_chip(ui, "OSC 2", &p.screen_osc2, p.osc2_on.value());
+                screen_chip(ui, "MIX", &p.screen_mix, true);
+                screen_chip(ui, "OUT", &p.screen_out, true);
+            }
+        });
+    });
+}
+
+/// The `WAVE  FREQ` chips under the screen: which view it shows. The screen's own
+/// setting, not a parameter. They look like the screen's other chips, with the current
+/// one lit.
+fn view_switch(ui: &mut egui::Ui, setting: &AtomicU8, choices: &[(u8, &str)]) {
+    let current = setting.load(Ordering::Relaxed);
+    ui.add_enabled_ui(!in_mod_mode(ui), |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.spacing_mut().button_padding = egui::vec2(4.0, 0.0);
+            cyan_selection(ui);
+            for &(choice, label) in choices {
+                let text = egui::RichText::new(label).size(SCREEN_CHIP_TEXT);
+                let response = ui.add(egui::Button::selectable(current == choice, text));
+                if current != choice {
+                    chip_outline(ui, &response, None);
+                }
+                if response.clicked() {
+                    setting.store(choice, Ordering::Relaxed);
+                }
+            }
         });
     });
 }
@@ -736,6 +858,15 @@ fn neon_line(
 /// The thickest line ever drawn, which sets how much room lines leave for their glow.
 const THICKEST_LINE: f32 = 2.0;
 
+/// Where a line's value `v` (-1 at the bottom, 1 at the top) lands in `rect`. It leaves
+/// room top and bottom so the glow isn't cut off. The room is the same for every line,
+/// however thick, so lines of different thicknesses share one scale and land on top of
+/// each other when they match.
+fn line_y(rect: egui::Rect, v: f32) -> f32 {
+    let half_height = rect.height() / 2.0 - (THICKEST_LINE * 2.2 / 2.0 + 1.5);
+    rect.center().y - v * half_height
+}
+
 /// `neon_line` with its glow scaled by `glow` (1 = the usual).
 fn neon_line_glow(
     painter: &egui::Painter,
@@ -745,19 +876,26 @@ fn neon_line_glow(
     thickness: f32,
     glow: f32,
 ) {
+    neon_curve(painter, rect, curve, line_steps(rect), color, thickness, glow);
+}
+
+/// `neon_line_glow` made of `steps` segments, for curves with detail finer than the
+/// usual spacing (like a sharp resonant peak).
+fn neon_curve(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    curve: impl Fn(f32) -> f32,
+    steps: usize,
+    color: egui::Color32,
+    thickness: f32,
+    glow: f32,
+) {
     // Two wide, faint copies of the line underneath make the glow.
     let glow = [(thickness * 2.2, 0.10 * glow), (thickness * 1.5, 0.25 * glow)];
-    // Leave room top and bottom so the glow isn't cut off. The room is the same for
-    // every line, however thick, so lines of different thicknesses share one scale and
-    // land on top of each other when they match.
-    let half_height = rect.height() / 2.0 - (THICKEST_LINE * 2.2 / 2.0 + 1.5);
-
-    let steps = line_steps(rect);
     let points: Vec<egui::Pos2> = (0..=steps)
         .map(|i| {
             let x = i as f32 / steps as f32;
-            let y = curve(x);
-            egui::pos2(rect.left() + x * rect.width(), rect.center().y - y * half_height)
+            egui::pos2(rect.left() + x * rect.width(), line_y(rect, curve(x)))
         })
         .collect();
 
@@ -944,8 +1082,8 @@ const MIDDLE_COLUMN_WIDTH: f32 = 290.0;
 const RIGHT_COLUMN_WIDTH: f32 = READOUT_WIDTH;
 const COLUMN_GAP: f32 = 16.0;
 
-/// How tall the Scope panel is, outline included: what the bare screen and the space
-/// above it took before it had a panel, so the column below didn't move.
+/// How tall the Scope panel is down to the bottom of its screen, outline included. The
+/// row of view chips under the screen adds to this.
 const SCOPE_HEIGHT: f32 = 170.0 + PANEL_TITLE_SIZE / 2.0;
 /// The gap between the Scope's outline and its screen, at the sides and bottom.
 const SCOPE_BEZEL: f32 = 5.0;
