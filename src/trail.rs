@@ -120,12 +120,14 @@ mod tests {
         let mut p = Phosphor::default();
         p.update(0.0, Some(vec![0.0; 4]));
         // A new shape that then stays put: the glow slides over to it.
-        for frame in 1..=60 {
+        // Ten times PHOSPHOR_TIME of frames is long enough whatever it's tuned to.
+        let frames = (PHOSPHOR_TIME * 10.0 * 60.0) as usize;
+        for frame in 1..=frames {
             p.update(frame as f64 / 60.0, Some(vec![1.0; 4]));
         }
         assert!(p.line().unwrap().iter().all(|&y| (y - 1.0).abs() < 1e-3));
         // Silence clears it.
-        p.update(1.1, None);
+        p.update(frames as f64 / 60.0 + 0.1, None);
         assert_eq!(p.line(), None);
     }
 }

@@ -145,6 +145,8 @@ pub struct OutputCapture {
     /// fractions, since a cycle rarely lasts a whole number of samples). The screen
     /// starts the OUT line where a cycle began, so it holds still instead of scrolling.
     marked_at: AtomicUsize,
+    /// The value of `written` when capturing last started. Anything before it is old.
+    started_at: AtomicUsize,
     cycle_began: AtomicF32,
     cycle_len: AtomicF32,
 }
@@ -155,6 +157,7 @@ impl Default for OutputCapture {
             samples: (0..CAPTURE_LEN).map(|_| AtomicF32::new(0.0)).collect(),
             written: AtomicUsize::new(0),
             marked_at: AtomicUsize::new(0),
+            started_at: AtomicUsize::new(0),
             cycle_began: AtomicF32::new(0.0),
             cycle_len: AtomicF32::new(0.0),
         }
@@ -162,7 +165,16 @@ impl Default for OutputCapture {
 }
 
 impl OutputCapture {
-    /// Called by the audio thread for every sample, while the window is open.
+    /// Called by the audio thread when capturing starts again after a pause: what's in
+    /// the ring is from before, so the window shouldn't use it.
+    pub fn restart(&self) {
+        let written = self.written.load(Ordering::Relaxed);
+        self.started_at.store(written, Ordering::Relaxed);
+        // No cycle marked yet, so the window shows nothing until there is one.
+        self.cycle_len.store(0.0, Ordering::Relaxed);
+    }
+
+    /// Called by the audio thread for every sample, while the OUT line is showing.
     pub fn push(&self, sample: f32) {
         let n = self.written.load(Ordering::Relaxed);
         self.samples[n % CAPTURE_LEN].store(sample, Ordering::Relaxed);
@@ -196,8 +208,9 @@ impl OutputCapture {
         // The newest sample is 1 back, the one before it 2, and so on.
         let end = written.wrapping_sub(marked_at) as f32 + self.cycle_began.load(Ordering::Relaxed);
         let start = end + cycles * len;
-        // All of it must be written, and not yet overwritten.
-        if start + 1.0 >= written.min(CAPTURE_LEN) as f32 {
+        // All of it must be written since capturing started, and not yet overwritten.
+        let fresh = written.wrapping_sub(self.started_at.load(Ordering::Relaxed)).min(CAPTURE_LEN);
+        if start + 1.0 >= fresh as f32 {
             return None;
         }
         // The value `back` samples before the newest one is written. With a fraction,
@@ -261,6 +274,19 @@ mod tests {
             let expected = (k % 100) as f32 / 100.0;
             assert!((y - expected).abs() < 1e-3, "point {k}: {y} vs {expected}");
         }
+    }
+
+    #[test]
+    fn capture_drops_old_output_on_restart() {
+        let out = OutputCapture::default();
+        for _ in 0..1_000 {
+            out.push(0.5);
+        }
+        out.restart();
+        out.push(0.0);
+        out.mark_cycle(0.0, 480.0, 48_000.0);
+        // Plenty in the ring, but almost all of it from before the restart.
+        assert_eq!(out.cycles(2.0, 10), None);
     }
 
     #[test]

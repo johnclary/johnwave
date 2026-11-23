@@ -55,6 +55,8 @@ pub struct Johnwave {
     display: Arc<SharedScreen>,
     /// The last moment of real output, for the screen's OUT line.
     capture: Arc<OutputCapture>,
+    /// Whether the capture was running last block, to notice it starting again.
+    capturing: bool,
     /// The newest voice's mod source values, for mod mode's live tick.
     live_sources: Arc<LiveSources>,
     /// Lets the audio thread tell the window to redraw (the waveform moved).
@@ -684,6 +686,7 @@ impl Default for Johnwave {
             editor_state: editor::default_state(),
             display: Arc::new(SharedScreen::default()),
             capture: Arc::new(OutputCapture::default()),
+            capturing: false,
             live_sources: Arc::new(LiveSources::default()),
             repaint: RepaintNotifier::new(),
         }
@@ -786,11 +789,9 @@ impl Johnwave {
         }
         // The real output changes all the time (detune drifts, the filter moves), so
         // while the OUT line is showing a note, redraw every block.
-        if let Some(v) = newest {
+        if let Some(v) = newest.filter(|_| self.capturing) {
             self.capture.mark_cycle(v.osc1_phase, v.osc1_freq, self.sample_rate);
-            if self.params.screen_out.load(Ordering::Relaxed) {
-                self.repaint.request_repaint();
-            }
+            self.repaint.request_repaint();
         }
     }
 
@@ -915,8 +916,13 @@ impl Plugin for Johnwave {
             self.mode = mode;
         }
 
-        // Only keep the output for the screen while there's a window to show it.
-        let capturing = self.editor_state.is_open();
+        // Only keep the output for the screen while the window is open with OUT on.
+        // Starting again, whatever's left in the ring is from earlier, so it's dropped.
+        let capturing = self.editor_state.is_open() && self.params.screen_out.load(Ordering::Relaxed);
+        if capturing && !self.capturing {
+            self.capture.restart();
+        }
+        self.capturing = capturing;
 
         for (sample_id, channel_samples) in buffer.iter_samples().enumerate() {
             // Apply all events scheduled at or before this sample.
