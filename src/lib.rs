@@ -14,6 +14,7 @@ mod notes;
 mod osc;
 mod readout;
 mod screen;
+mod spectrum;
 mod trail;
 mod unison;
 mod voice;
@@ -224,6 +225,9 @@ pub struct SynthParams {
     /// The FREQ view's filter curve.
     #[persist = "screen_filter"]
     pub screen_filter: Arc<AtomicBool>,
+    /// The FREQ view's live spectrum of the output (its OUT chip).
+    #[persist = "screen_spectrum"]
+    pub screen_spectrum: Arc<AtomicBool>,
     /// Which view the screen shows: `editor::SCREEN_VIEW_WAVE` or `SCREEN_VIEW_FREQ`.
     #[persist = "screen_view"]
     pub screen_view: Arc<AtomicU8>,
@@ -519,6 +523,7 @@ impl Default for SynthParams {
             screen_mix: Arc::new(AtomicBool::new(true)),
             screen_out: Arc::new(AtomicBool::new(true)),
             screen_filter: Arc::new(AtomicBool::new(true)),
+            screen_spectrum: Arc::new(AtomicBool::new(true)),
             screen_view: Arc::new(AtomicU8::new(editor::SCREEN_VIEW_WAVE)),
         }
     }
@@ -796,7 +801,7 @@ impl Johnwave {
             self.repaint.request_repaint();
         }
         // The real output changes all the time (detune drifts, the filter moves), so
-        // while the OUT line is showing a note, redraw every block.
+        // while the OUT line or the spectrum is showing a note, redraw every block.
         if let Some(v) = newest.filter(|_| self.capturing) {
             self.capture.mark_cycle(v.osc1_phase, v.osc1_freq, self.sample_rate);
             self.repaint.request_repaint();
@@ -925,12 +930,14 @@ impl Plugin for Johnwave {
             self.mode = mode;
         }
 
-        // Only keep the output for the screen while the window is open showing the OUT
-        // line. Starting again, whatever's left in the ring is from earlier, so it's
-        // dropped.
-        let capturing = self.editor_state.is_open()
-            && self.params.screen_out.load(Ordering::Relaxed)
-            && self.params.screen_view.load(Ordering::Relaxed) == editor::SCREEN_VIEW_WAVE;
+        // Only keep the output for the screen while the window is open showing it: the
+        // OUT line in WAVE, or the spectrum in FREQ. Starting again, whatever's left in
+        // the ring is from earlier, so it's dropped.
+        let wanted = match self.params.screen_view.load(Ordering::Relaxed) {
+            editor::SCREEN_VIEW_FREQ => &self.params.screen_spectrum,
+            _ => &self.params.screen_out,
+        };
+        let capturing = self.editor_state.is_open() && wanted.load(Ordering::Relaxed);
         if capturing && !self.capturing {
             self.capture.restart();
         }

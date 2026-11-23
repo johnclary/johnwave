@@ -10,6 +10,7 @@ use crate::knob::Knob;
 use crate::knob::ModTarget;
 use crate::modulation::{mod_offset, mod_span, LiveSources, ModDest, ModSlotParams, ModSource, Routes, SlotDest, SlotSource};
 use crate::screen::{OutputCapture, ScreenWave, SharedScreen};
+use crate::spectrum::{Spectrum, FFT_SIZE};
 use crate::trail::{Phosphor, Trail};
 use crate::{SynthParams, VoiceMode};
 use nice_plug::context::gui::GuiContext;
@@ -52,6 +53,8 @@ pub struct JohnwaveEditor {
     trail: Trail,
     /// The OUT line's afterglow.
     phosphor: Phosphor,
+    /// The FREQ view's live spectrum of the output.
+    spectrum: Spectrum,
 }
 
 impl JohnwaveEditor {
@@ -71,6 +74,7 @@ impl JohnwaveEditor {
             repaint,
             trail: Trail::default(),
             phosphor: Phosphor::default(),
+            spectrum: Spectrum::default(),
         }
     }
 }
@@ -105,9 +109,15 @@ impl NiceEguiApp for JohnwaveEditor {
         // changes.
         let now = ui.input(|i| i.time);
         self.trail.update(now, self.display.load());
-        // The OUT line's glow, only while it's showing a note.
-        let out = self.params.screen_out.load(Ordering::Relaxed) && self.display.load().is_some();
+        // The OUT line's glow in WAVE, or the spectrum in FREQ, only while it's showing
+        // a note.
+        let playing = self.display.load().is_some();
+        let freq = self.params.screen_view.load(Ordering::Relaxed) == SCREEN_VIEW_FREQ;
+        let out = !freq && playing && self.params.screen_out.load(Ordering::Relaxed);
         self.phosphor.update(now, out.then(|| self.capture.cycles(SCREEN_CYCLES, OUT_POINTS)).flatten());
+        let spectrum = freq && playing && self.params.screen_spectrum.load(Ordering::Relaxed);
+        let latest = spectrum.then(|| self.capture.latest(FFT_SIZE)).flatten();
+        self.spectrum.update(now, latest.as_deref(), self.display.sample_rate(), FREQ_LOW, FREQ_HIGH);
         if self.trail.is_fading() {
             self.repaint.request_repaint();
         }
@@ -334,7 +344,8 @@ impl JohnwaveEditor {
                 let title_height = panel_title(ui, "Scope").size().y;
                 let height = SCOPE_HEIGHT - title_height - SCOPE_BEZEL;
                 panel_with(ui, "Scope", SCOPE_BEZEL, SCOPE_BEZEL, 0.0, |ui| {
-                    osc_display(ui, p, self.display.load(), &self.phosphor, &self.trail, self.display.sample_rate(), height);
+                    let lines = ScreenLines { phosphor: &self.phosphor, trail: &self.trail, spectrum: &self.spectrum };
+                    osc_display(ui, p, self.display.load(), lines, self.display.sample_rate(), height);
                     ui.add_space(SCOPE_BEZEL);
                     view_switch(ui, &p.screen_view, &[(SCREEN_VIEW_WAVE, "WAVE"), (SCREEN_VIEW_FREQ, "FREQ")]);
                 });
@@ -535,8 +546,7 @@ fn osc_display(
     ui: &mut egui::Ui,
     p: &SynthParams,
     wave: Option<ScreenWave>,
-    phosphor: &Phosphor,
-    trail: &Trail,
+    lines: ScreenLines,
     sample_rate: f32,
     height: f32,
 ) {
@@ -555,10 +565,18 @@ fn osc_display(
     let (chip_row, view) = inner.split_top_bottom_at_y(inner.top() + SCREEN_CHIP_ROW);
     screen_chips(ui, chip_row, p);
     if p.screen_view.load(Ordering::Relaxed) == SCREEN_VIEW_FREQ {
-        freq_view(&painter, view, p, wave, sample_rate, faint);
+        freq_view(&painter, view, p, wave, lines.spectrum, sample_rate, faint);
     } else {
-        wave_view(ui, &painter, view, p, wave, phosphor, trail, faint);
+        wave_view(ui, &painter, view, p, wave, lines.phosphor, lines.trail, faint);
     }
+}
+
+/// What the window remembers between frames for the screen's live lines.
+#[derive(Clone, Copy)]
+struct ScreenLines<'a> {
+    phosphor: &'a Phosphor,
+    trail: &'a Trail,
+    spectrum: &'a Spectrum,
 }
 
 /// The WAVE view: two cycles of Osc 1 across, with each line the chips switch on.
@@ -638,12 +656,13 @@ fn wave_view(
 /// octave the same width, the way pitch is heard), loudness up the side in decibels.
 /// It shows the filter's curve: what it lets through at each frequency. While a note
 /// plays the curve follows that note's cutoff and resonance, mod routes and all;
-/// otherwise it shows the knobs.
+/// otherwise it shows the knobs. Behind it, the live spectrum of the real output.
 fn freq_view(
     painter: &egui::Painter,
     rect: egui::Rect,
     p: &SynthParams,
     wave: Option<ScreenWave>,
+    spectrum: &Spectrum,
     sample_rate: f32,
     faint: egui::Color32,
 ) {
@@ -672,6 +691,31 @@ fn freq_view(
         );
     }
 
+    // The spectrum, behind the curve. Its levels are of the sound itself (0 dBFS is a
+    // full-scale sine), not how much the filter changes it, so it has its own scale:
+    // 0 dBFS at the top, SPECTRUM_BOTTOM at the bottom. A soft filled hill in OUT's
+    // white, with a thin glowing edge along the top.
+    if let Some(levels) = spectrum.levels().filter(|_| p.screen_spectrum.load(Ordering::Relaxed)) {
+        let v_of = |db: f32| (2.0 * (db - SPECTRUM_BOTTOM) / -SPECTRUM_BOTTOM - 1.0).clamp(-1.0, 1.0);
+        let level_at = |x: f32| levels[((x * levels.len() as f32) as usize).min(levels.len() - 1)];
+        // The fill: a strip of triangles between the top edge and the bottom, each
+        // column's two corners meeting the next column's.
+        let fill = OUT_COLOR.gamma_multiply(SPECTRUM_FILL);
+        let mut mesh = egui::Mesh::default();
+        for (c, &db) in levels.iter().enumerate() {
+            let x = rect.left() + (c as f32 + 0.5) / levels.len() as f32 * rect.width();
+            mesh.colored_vertex(egui::pos2(x, line_y(rect, v_of(db))), fill);
+            mesh.colored_vertex(egui::pos2(x, rect.bottom()), fill);
+            if c > 0 {
+                let i = 2 * c as u32;
+                mesh.add_triangle(i - 2, i - 1, i);
+                mesh.add_triangle(i - 1, i + 1, i);
+            }
+        }
+        painter.add(mesh);
+        neon_curve(painter, rect, |x| v_of(level_at(x)), levels.len(), OUT_COLOR.gamma_multiply(SPECTRUM_EDGE), 1.0, OUT_GLOW);
+    }
+
     if p.screen_filter.load(Ordering::Relaxed) {
         let (cutoff, resonance) = match wave {
             Some(w) => (w.cutoff_hz, w.resonance),
@@ -698,6 +742,11 @@ const DB_TOP: f32 = 24.0;
 const DB_BOTTOM: f32 = -36.0;
 /// Segments in the filter curve: enough to catch a sharp resonant peak.
 const FREQ_STEPS: usize = 400;
+/// The spectrum's scale up the side: 0 dBFS at the top down to this, in dBFS.
+const SPECTRUM_BOTTOM: f32 = -90.0;
+/// How bright the spectrum's fill and its top edge are, so the filter curve stands out.
+const SPECTRUM_FILL: f32 = 0.15;
+const SPECTRUM_EDGE: f32 = 0.6;
 /// The frequency labels' text size.
 const FREQ_LABEL_SIZE: f32 = 9.0;
 
@@ -713,7 +762,8 @@ pub const SCREEN_VIEW_WAVE: u8 = 0;
 pub const SCREEN_VIEW_FREQ: u8 = 1;
 
 /// The chips along the top of the screen. In WAVE, `OSC 1  OSC 2  MIX  OUT` switch each line on and off (Osc 2's greys out
-/// while Osc 2 is switched off). In FREQ, `FILTER` does the same for the filter's curve.
+/// while Osc 2 is switched off). In FREQ, `FILTER  OUT` do the same for the filter's curve
+/// and the output's spectrum.
 /// They're window settings, not sound, so they're saved with the patch but aren't
 /// parameters.
 fn screen_chips(ui: &mut egui::Ui, row: egui::Rect, p: &SynthParams) {
@@ -727,6 +777,7 @@ fn screen_chips(ui: &mut egui::Ui, row: egui::Rect, p: &SynthParams) {
             let view = p.screen_view.load(Ordering::Relaxed);
             if view == SCREEN_VIEW_FREQ {
                 screen_chip(ui, "FILTER", &p.screen_filter, true);
+                screen_chip(ui, "OUT", &p.screen_spectrum, true);
             } else {
                 screen_chip(ui, "OSC 1", &p.screen_osc1, true);
                 screen_chip(ui, "OSC 2", &p.screen_osc2, p.osc2_on.value());

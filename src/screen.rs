@@ -5,7 +5,8 @@
 //! window redraws the waves from them with the same `osc::shape` the sound uses.
 //!
 //! The OUT line is the one exception: `OutputCapture` keeps the last fraction of a
-//! second of what the voices really played, so the screen can show it next to them.
+//! second of what the voices really played, so the screen can show it next to them
+//! (and, in the FREQ view, its spectrum).
 
 use nice_plug::prelude::AtomicF32;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -230,6 +231,24 @@ impl OutputCapture {
         self.marked_at.store(self.written.load(Ordering::Relaxed), Ordering::Release);
     }
 
+    /// Called by the window: the newest `n` samples, oldest first, for the FREQ view's
+    /// spectrum. `None` if fewer than `n` have been written since capturing started.
+    pub fn latest(&self, n: usize) -> Option<Vec<f32>> {
+        let written = self.written.load(Ordering::Acquire);
+        if n > self.fresh(written) {
+            return None;
+        }
+        // The newest sample is 1 back, so the oldest one wanted is `n` back.
+        let slot = |back: usize| self.samples[written.wrapping_sub(back) % CAPTURE_LEN].load(Ordering::Relaxed);
+        Some((1..=n).rev().map(slot).collect())
+    }
+
+    /// How many of the newest samples are usable: written since capturing started, and
+    /// not yet overwritten.
+    fn fresh(&self, written: usize) -> usize {
+        written.wrapping_sub(self.started_at.load(Ordering::Relaxed)).min(CAPTURE_LEN)
+    }
+
     /// Called by the window: `cycles` cycles of osc 1 from the output, ending where the
     /// latest marked cycle began, as `points` evenly spaced values (in-between values
     /// are blended from their neighbours). `None` if the ring doesn't hold all of it.
@@ -245,8 +264,7 @@ impl OutputCapture {
         let end = written.wrapping_sub(marked_at) as f32 + self.cycle_began.load(Ordering::Relaxed);
         let start = end + cycles * len;
         // All of it must be written since capturing started, and not yet overwritten.
-        let fresh = written.wrapping_sub(self.started_at.load(Ordering::Relaxed)).min(CAPTURE_LEN);
-        if start + 1.0 >= fresh as f32 {
+        if start + 1.0 >= self.fresh(written) as f32 {
             return None;
         }
         // The value `back` samples before the newest one is written. With a fraction,
@@ -332,6 +350,35 @@ mod tests {
         out.mark_cycle(0.0, 480.0, 48_000.0);
         // Plenty in the ring, but almost all of it from before the restart.
         assert_eq!(out.cycles(2.0, 10), None);
+    }
+
+    #[test]
+    fn latest_is_the_newest_samples_in_order() {
+        let out = OutputCapture::default();
+        // Past the end of the ring, so reading has to wrap round.
+        for n in 0..CAPTURE_LEN + 100 {
+            out.push(n as f32);
+        }
+        let got = out.latest(5).expect("enough is written");
+        let newest = (CAPTURE_LEN + 99) as f32;
+        assert_eq!(got, vec![newest - 4.0, newest - 3.0, newest - 2.0, newest - 1.0, newest]);
+        // The whole ring is fine, but not more than it holds.
+        assert!(out.latest(CAPTURE_LEN).is_some());
+        assert_eq!(out.latest(CAPTURE_LEN + 1), None);
+    }
+
+    #[test]
+    fn latest_drops_old_output_on_restart() {
+        let out = OutputCapture::default();
+        for _ in 0..1_000 {
+            out.push(0.5);
+        }
+        out.restart();
+        for _ in 0..10 {
+            out.push(0.0);
+        }
+        assert_eq!(out.latest(11), None);
+        assert_eq!(out.latest(10), Some(vec![0.0; 10]));
     }
 
     #[test]

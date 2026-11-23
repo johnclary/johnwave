@@ -50,6 +50,7 @@ folder at `target/bundled` and just rebuild + rescan.
 
 ## Todo
 
+- readout bugginess in mod mode
 - second lfo and second mod env (and/or use amp env as a mod source)
 - ability to type in param values (with left click?)
 - a second filter
@@ -58,7 +59,8 @@ folder at `target/bundled` and just rebuild + rescan.
 - play with the colours. They're all in `src/editor.rs`:
   - `cyan()` and `CYAN_HUE`: the main neon cyan (knob arcs, title, chips)
   - `neon_color()`, `HUE_DRIFT`, `SATURATION`: how the scope's lines shift from cyan as Osc 1's Shape goes up
-  - `OUT_COLOR`, `OUT_GLOW`: the scope's soft white OUT line
+  - `OUT_COLOR`, `OUT_GLOW`: the scope's soft white OUT line (and the FREQ view's spectrum, which uses the same white)
+  - `SPECTRUM_FILL`, `SPECTRUM_EDGE`: how bright the spectrum's fill and its top edge are
   - `COMPONENT_STRENGTH`, `TRAIL_STRENGTH`: how faint the thin Osc 1/Osc 2 lines and the trail are
   - `mod_pink()`: the mod colour (mod arcs, mod mode)
   - `panel_gray()`: panel outlines and titles
