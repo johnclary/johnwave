@@ -104,6 +104,19 @@ pub struct VoiceParams {
     pub mod_env: AdsrSettings,
 }
 
+/// The newest voice, as the window sees it.
+#[derive(Clone, Copy)]
+pub struct DisplayVoice {
+    /// What the screen draws.
+    pub wave: ScreenWave,
+    /// The mod sources, for mod mode's live tick.
+    pub sources: ModSources,
+    /// Where osc 1's first copy is in its cycle (0..1), and its frequency in Hz. The
+    /// screen uses them to line the real output up with osc 1.
+    pub osc1_phase: f32,
+    pub osc1_freq: f32,
+}
+
 pub struct Voice {
     /// MIDI key this voice is playing (or last played).
     note: u8,
@@ -138,6 +151,9 @@ pub struct Voice {
     /// 2's tuning and mix, and the level), from the latest sample. `screen.level` is also
     /// the amp envelope times velocity that the voice is scaled by.
     screen: ScreenWave,
+    /// The frequency osc 1's first copy played on the latest sample, in Hz. With its
+    /// phase, it tells the screen where the cycles start in the real output.
+    osc1_freq: f32,
     /// The modulation sources from the latest sample. Read by the window's live tick.
     sources: ModSources,
 }
@@ -163,6 +179,7 @@ impl Default for Voice {
             lfo: Lfo::default(),
             since_start_s: 0.0,
             screen: ScreenWave::default(),
+            osc1_freq: 440.0,
             sources: ModSources::default(),
         }
     }
@@ -353,6 +370,9 @@ impl Voice {
             } else {
                 freq * (detune_ct * unison::position(i, copies) / 1200.0).exp2()
             };
+            if i == 0 {
+                self.osc1_freq = copy_freq;
+            }
             let mut s = self.osc1[i].next(copy_freq, sample_rate, morph);
             if osc2_on {
                 s = s * gain1 + self.osc2[i].next(copy_freq * ratio2, sample_rate, morph2) * gain2;
@@ -481,14 +501,19 @@ impl VoicePool {
         self.last_note = None;
     }
 
-    /// What the screen shows and the mod sources of the most recently started voice
-    /// that's still sounding, or `None` when nothing is playing.
-    pub fn newest_display(&self) -> Option<(ScreenWave, ModSources)> {
+    /// What the window needs from the most recently started voice that's still
+    /// sounding, or `None` when nothing is playing.
+    pub fn newest_display(&self) -> Option<DisplayVoice> {
         self.voices
             .iter()
             .filter(|v| v.is_active())
             .max_by_key(|v| v.age)
-            .map(|v| (v.screen, v.sources))
+            .map(|v| DisplayVoice {
+                wave: v.screen,
+                sources: v.sources,
+                osc1_phase: v.osc1[0].phase(),
+                osc1_freq: v.osc1_freq,
+            })
     }
 
     /// The single voice used in mono mode.
@@ -844,7 +869,7 @@ mod tests {
             let mut pool = VoicePool::default();
             on(&mut pool, 57);
             pool.next(p, SR);
-            pool.newest_display().expect("a note is playing").0
+            pool.newest_display().expect("a note is playing").wave
         };
         // Off: the screen is osc 1 alone.
         let off = screen(&PARAMS);

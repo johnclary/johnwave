@@ -55,3 +55,10 @@ folder at `target/bundled` and just rebuild + rescan.
 - a second filter
 - 2× oversampling around the filter, to cut back on Drive's aliasing turns
 - small line in center of polar knobs (inside the arc ring)
+- play with the colours. They're all in `src/editor.rs`:
+  - `cyan()` and `CYAN_HUE`: the main neon cyan (knob arcs, title, chips)
+  - `neon_color()`, `HUE_DRIFT`, `SATURATION`: how the scope's lines shift from cyan as Osc 1's Shape goes up
+  - `OUT_COLOR`, `OUT_GLOW`: the scope's soft white OUT line
+  - `COMPONENT_STRENGTH`, `TRAIL_STRENGTH`: how faint the thin Osc 1/Osc 2 lines and the trail are
+  - `mod_pink()`: the mod colour (mod arcs, mod mode)
+  - `panel_gray()`: panel outlines and titles

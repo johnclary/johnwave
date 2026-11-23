@@ -26,7 +26,6 @@ impl MorphOsc {
     }
 
     /// Where in the cycle it is (0..1).
-    #[cfg(test)]
     pub fn phase(&self) -> f32 {
         self.phase
     }

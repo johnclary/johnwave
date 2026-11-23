@@ -9,8 +9,8 @@ use crate::filter::{FilterSlope, FilterType};
 use crate::knob::Knob;
 use crate::knob::ModTarget;
 use crate::modulation::{mod_offset, mod_span, LiveSources, ModDest, ModSlotParams, ModSource, Routes, SlotDest, SlotSource};
-use crate::screen::{ScreenWave, SharedScreen};
-use crate::trail::Trail;
+use crate::screen::{OutputCapture, ScreenWave, SharedScreen};
+use crate::trail::{Phosphor, Trail};
 use crate::{SynthParams, VoiceMode};
 use nice_plug::context::gui::GuiContext;
 use nice_plug::editor::dpi::LogicalSize;
@@ -40,6 +40,8 @@ pub struct JohnwaveEditor {
     /// and Mod Env, Osc 2's tuning and mix, and how loud it is), set by the audio thread.
     /// The oscillator screen draws this, so it swells and fades with the amp envelope.
     display: Arc<SharedScreen>,
+    /// The last moment of real output, set by the audio thread, for the OUT line.
+    capture: Arc<OutputCapture>,
     /// The newest voice's mod source values, set by the audio thread, for the live tick.
     live_sources: Arc<LiveSources>,
     /// Asks the host for another frame. `ctx.request_repaint()` doesn't get through in
@@ -48,12 +50,15 @@ pub struct JohnwaveEditor {
     repaint: RepaintNotifier,
     /// The faint copies of recent shapes drawn behind the screen's wave.
     trail: Trail,
+    /// The OUT line's afterglow.
+    phosphor: Phosphor,
 }
 
 impl JohnwaveEditor {
     pub fn new(
         params: Arc<SynthParams>,
         display: Arc<SharedScreen>,
+        capture: Arc<OutputCapture>,
         live_sources: Arc<LiveSources>,
         repaint: RepaintNotifier,
     ) -> Self {
@@ -61,9 +66,11 @@ impl JohnwaveEditor {
             params,
             gui_context: None,
             display,
+            capture,
             live_sources,
             repaint,
             trail: Trail::default(),
+            phosphor: Phosphor::default(),
         }
     }
 }
@@ -98,6 +105,9 @@ impl NiceEguiApp for JohnwaveEditor {
         // changes.
         let now = ui.input(|i| i.time);
         self.trail.update(now, self.display.load());
+        // The OUT line's glow, only while it's showing a note.
+        let out = self.params.screen_out.load(Ordering::Relaxed) && self.display.load().is_some();
+        self.phosphor.update(now, out.then(|| self.capture.cycles(SCREEN_CYCLES, OUT_POINTS)).flatten());
         if self.trail.is_fading() {
             self.repaint.request_repaint();
         }
@@ -325,7 +335,7 @@ impl JohnwaveEditor {
                 let title_height = panel_title(ui, "Scope").size().y;
                 let height = SCOPE_HEIGHT - title_height - SCOPE_BEZEL;
                 panel_with(ui, "Scope", SCOPE_BEZEL, SCOPE_BEZEL, 0.0, |ui| {
-                    osc_display(ui, p, self.display.load(), &self.trail, height);
+                    osc_display(ui, p, self.display.load(), &self.phosphor, &self.trail, height);
                 });
 
                 panel(ui, "Unison", |ui| {
@@ -520,7 +530,14 @@ const READOUT_HEIGHT: f32 = 30.0;
 /// and their real level (the square looks smaller because it's scaled to sound as loud as
 /// the others). `wave` is `None` when nothing is playing. Chips along the top switch
 /// each line on and off.
-fn osc_display(ui: &mut egui::Ui, p: &SynthParams, wave: Option<ScreenWave>, trail: &Trail, height: f32) {
+fn osc_display(
+    ui: &mut egui::Ui,
+    p: &SynthParams,
+    wave: Option<ScreenWave>,
+    phosphor: &Phosphor,
+    trail: &Trail,
+    height: f32,
+) {
     let size = egui::vec2(ui.available_width(), height);
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     let mut painter = ui.painter_at(rect);
@@ -537,6 +554,7 @@ fn osc_display(ui: &mut egui::Ui, p: &SynthParams, wave: Option<ScreenWave>, tra
     screen_chips(ui, chip_row, p);
     let show = |flag: &AtomicBool| flag.load(Ordering::Relaxed);
     let (show1, show2, show_mix) = (show(&p.screen_osc1), show(&p.screen_osc2), show(&p.screen_mix));
+    let show_out = show(&p.screen_out);
 
     // A faint centre line at 0.
     painter.line_segment(
@@ -582,9 +600,27 @@ fn osc_display(ui: &mut egui::Ui, p: &SynthParams, wave: Option<ScreenWave>, tra
     if show_mix {
         screen_line(&painter, waves, |x| w.mix(x), color, 2.0);
     }
+    // Last and on top, the real output: what the voices actually played, after Crush,
+    // the filter, unison and any other notes, lined up with Osc 1's cycles. Without any
+    // of those it lands right on the MIX line. A thin soft white with a light glow, like
+    // a real scope trace next to the drawn neon waves.
+    if show_out {
+        if let Some(out) = phosphor.line() {
+            let last = (out.len() - 1) as f32;
+            let curve = |x: f32| out[(x * last).round() as usize].clamp(-1.0, 1.0);
+            neon_line_glow(&painter, waves, curve, OUT_COLOR, 1.5, OUT_GLOW);
+        }
+    }
 }
 
-/// The `OSC 1  OSC 2  MIX` chips along the top of the screen. Each switches its line on
+/// How many points the OUT line is made of. About one per screen point across.
+const OUT_POINTS: usize = 240;
+/// The OUT line's soft white, a touch cool so it sits with the cyan.
+const OUT_COLOR: egui::Color32 = egui::Color32::from_rgb(0xE6, 0xEE, 0xF2);
+/// How strong the OUT line's glow is, compared with the neon lines'.
+const OUT_GLOW: f32 = 0.5;
+
+/// The `OSC 1  OSC 2  MIX  OUT` chips along the top of the screen. Each switches its line on
 /// and off. Osc 2's greys out while Osc 2 is switched off. They're window settings, not
 /// sound, so they're saved with the patch but aren't parameters.
 fn screen_chips(ui: &mut egui::Ui, row: egui::Rect, p: &SynthParams) {
@@ -598,6 +634,7 @@ fn screen_chips(ui: &mut egui::Ui, row: egui::Rect, p: &SynthParams) {
             screen_chip(ui, "OSC 1", &p.screen_osc1, true);
             screen_chip(ui, "OSC 2", &p.screen_osc2, p.osc2_on.value());
             screen_chip(ui, "MIX", &p.screen_mix, true);
+            screen_chip(ui, "OUT", &p.screen_out, true);
         });
     });
 }
@@ -678,6 +715,12 @@ fn wave_line(
     neon_line(painter, rect, |x| wave((x * cycles).fract()), color, thickness);
 }
 
+/// How many segments a line across `rect` is made of: one per 2 screen points across is
+/// plenty for a smooth line.
+fn line_steps(rect: egui::Rect) -> usize {
+    ((rect.width() / 2.0) as usize).max(8)
+}
+
 /// Draw `curve` (0..1 across `rect` in, -1..1 out) as a neon line `thickness` wide.
 /// Shared by the oscillator screen and the knob waves so they look alike.
 fn neon_line(
@@ -687,13 +730,29 @@ fn neon_line(
     color: egui::Color32,
     thickness: f32,
 ) {
-    // Two wide, faint copies of the line underneath make the glow.
-    let glow = [(thickness * 2.2, 0.10), (thickness * 1.5, 0.25)];
-    // Leave room top and bottom so the glow isn't cut off.
-    let half_height = rect.height() / 2.0 - (glow[0].0 / 2.0 + 1.5);
+    neon_line_glow(painter, rect, curve, color, thickness, 1.0);
+}
 
-    // One point per 2 screen points across is plenty for a smooth line.
-    let steps = ((rect.width() / 2.0) as usize).max(8);
+/// The thickest line ever drawn, which sets how much room lines leave for their glow.
+const THICKEST_LINE: f32 = 2.0;
+
+/// `neon_line` with its glow scaled by `glow` (1 = the usual).
+fn neon_line_glow(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    curve: impl Fn(f32) -> f32,
+    color: egui::Color32,
+    thickness: f32,
+    glow: f32,
+) {
+    // Two wide, faint copies of the line underneath make the glow.
+    let glow = [(thickness * 2.2, 0.10 * glow), (thickness * 1.5, 0.25 * glow)];
+    // Leave room top and bottom so the glow isn't cut off. The room is the same for
+    // every line, however thick, so lines of different thicknesses share one scale and
+    // land on top of each other when they match.
+    let half_height = rect.height() / 2.0 - (THICKEST_LINE * 2.2 / 2.0 + 1.5);
+
+    let steps = line_steps(rect);
     let points: Vec<egui::Pos2> = (0..=steps)
         .map(|i| {
             let x = i as f32 / steps as f32;

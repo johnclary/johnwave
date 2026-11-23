@@ -3,9 +3,12 @@
 //! The screen doesn't record any audio. The audio thread hands over a few numbers
 //! (each oscillator's Shape, Osc 2's tuning, the mix, how loud the voice is) and the
 //! window redraws the waves from them with the same `osc::shape` the sound uses.
+//!
+//! The OUT line is the one exception: `OutputCapture` keeps the last fraction of a
+//! second of what the voices really played, so the screen can show it next to them.
 
 use nice_plug::prelude::AtomicF32;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// One voice's oscillators, as the screen draws them.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -123,6 +126,94 @@ impl SharedScreen {
     }
 }
 
+/// How many samples of output the screen keeps: about 0.34 s at 48 kHz, enough for two
+/// cycles of the lowest notes. A power of two, so wrapping round is cheap.
+const CAPTURE_LEN: usize = 16_384;
+
+/// The last `CAPTURE_LEN` samples of output, for the OUT line. The audio thread writes
+/// one sample at a time round a ring (like a clock hand going round and overwriting the
+/// oldest), and the window reads whichever stretch it needs. Every slot is its own atomic
+/// number, so neither side waits for the other. A read that overlaps a write can catch
+/// a sample or two mid-update, which can't be seen at 60 frames a second.
+pub struct OutputCapture {
+    samples: Box<[AtomicF32]>,
+    /// How many samples have been written, ever. `written % CAPTURE_LEN` is where the
+    /// next one goes.
+    written: AtomicUsize,
+    /// The value of `written` when osc 1's cycle was last marked, how many samples
+    /// before that the cycle began, and how long osc 1's cycles are, in samples (with
+    /// fractions, since a cycle rarely lasts a whole number of samples). The screen
+    /// starts the OUT line where a cycle began, so it holds still instead of scrolling.
+    marked_at: AtomicUsize,
+    cycle_began: AtomicF32,
+    cycle_len: AtomicF32,
+}
+
+impl Default for OutputCapture {
+    fn default() -> Self {
+        Self {
+            samples: (0..CAPTURE_LEN).map(|_| AtomicF32::new(0.0)).collect(),
+            written: AtomicUsize::new(0),
+            marked_at: AtomicUsize::new(0),
+            cycle_began: AtomicF32::new(0.0),
+            cycle_len: AtomicF32::new(0.0),
+        }
+    }
+}
+
+impl OutputCapture {
+    /// Called by the audio thread for every sample, while the window is open.
+    pub fn push(&self, sample: f32) {
+        let n = self.written.load(Ordering::Relaxed);
+        self.samples[n % CAPTURE_LEN].store(sample, Ordering::Relaxed);
+        self.written.store(n.wrapping_add(1), Ordering::Release);
+    }
+
+    /// Called by the audio thread at the end of each block: where osc 1 of the newest
+    /// voice is in its cycle now (0..1), and its frequency. Its current cycle began
+    /// `phase` cycles ago.
+    pub fn mark_cycle(&self, phase: f32, freq: f32, sample_rate: f32) {
+        if freq <= 0.0 {
+            return;
+        }
+        let len = sample_rate / freq;
+        self.cycle_began.store(phase * len, Ordering::Relaxed);
+        self.cycle_len.store(len, Ordering::Relaxed);
+        self.marked_at.store(self.written.load(Ordering::Relaxed), Ordering::Release);
+    }
+
+    /// Called by the window: `cycles` cycles of osc 1 from the output, ending where the
+    /// latest marked cycle began, as `points` evenly spaced values (in-between values
+    /// are blended from their neighbours). `None` if the ring doesn't hold all of it.
+    pub fn cycles(&self, cycles: f32, points: usize) -> Option<Vec<f32>> {
+        let marked_at = self.marked_at.load(Ordering::Acquire);
+        let written = self.written.load(Ordering::Acquire);
+        let len = self.cycle_len.load(Ordering::Relaxed);
+        if len <= 0.0 || points < 2 {
+            return None;
+        }
+        // How far back from the newest sample the stretch ends and starts, in samples.
+        // The newest sample is 1 back, the one before it 2, and so on.
+        let end = written.wrapping_sub(marked_at) as f32 + self.cycle_began.load(Ordering::Relaxed);
+        let start = end + cycles * len;
+        // All of it must be written, and not yet overwritten.
+        if start + 1.0 >= written.min(CAPTURE_LEN) as f32 {
+            return None;
+        }
+        // The value `back` samples before the newest one is written. With a fraction,
+        // it's blended from the samples either side.
+        let at = |back: f32| {
+            let whole = back.floor();
+            let frac = back - whole;
+            let slot = |b: usize| self.samples[written.wrapping_sub(b) % CAPTURE_LEN].load(Ordering::Relaxed);
+            let b = whole as usize;
+            slot(b) * (1.0 - frac) + slot(b + 1) * frac
+        };
+        // Left to right is oldest to newest.
+        Some((0..points).map(|k| at(start - (start - end) * k as f32 / (points - 1) as f32)).collect())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,6 +243,32 @@ mod tests {
         let w = ScreenWave { morph2: 0.3, ratio2: 2.0, ..ScreenWave::default() };
         // Half a cycle of osc 1 is a whole cycle of osc 2.
         assert!((w.osc2(0.1) - w.osc2(0.6)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn capture_lines_up_with_the_cycle() {
+        // A ramp from 0 to 1 every 100 samples, like a saw that starts each cycle at 0.
+        let out = OutputCapture::default();
+        let len = 100;
+        for n in 0..1_050 {
+            out.push((n % len) as f32 / len as f32);
+        }
+        // 1,050 samples in, the 11th cycle is half done.
+        out.mark_cycle(0.5, 480.0, 48_000.0);
+        let got = out.cycles(2.0, 201).expect("enough is written");
+        // Two whole cycles, each starting at 0 and climbing.
+        for (k, &y) in got.iter().enumerate().take(200) {
+            let expected = (k % 100) as f32 / 100.0;
+            assert!((y - expected).abs() < 1e-3, "point {k}: {y} vs {expected}");
+        }
+    }
+
+    #[test]
+    fn capture_waits_until_it_has_enough() {
+        let out = OutputCapture::default();
+        out.push(0.0);
+        out.mark_cycle(0.0, 480.0, 48_000.0);
+        assert_eq!(out.cycles(2.0, 10), None);
     }
 
     #[test]

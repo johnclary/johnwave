@@ -1,6 +1,6 @@
 use nice_plug::prelude::*;
 use std::collections::BTreeMap;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 mod crush;
@@ -23,7 +23,7 @@ use lfo::{Lfo, SyncDivision};
 use modulation::{enum_id, LiveSources, ModSlotParams, Routes, SlotDest, SlotSource, MATRIX_SLOTS};
 use nice_plug::plugin::ParamValue;
 use notes::NoteStack;
-use screen::SharedScreen;
+use screen::{OutputCapture, SharedScreen};
 use voice::{Porta, VoiceParams, VoicePool};
 use editor::JohnwaveEditor;
 use nice_plug_egui::{EguiEditor, EguiEditorState, EguiNiceSettings, RepaintNotifier};
@@ -53,6 +53,8 @@ pub struct Johnwave {
     /// What the window's screen shows: the newest voice's oscillators, or nothing when
     /// silent. The audio thread writes it and the window reads it (see `screen.rs`).
     display: Arc<SharedScreen>,
+    /// The last moment of real output, for the screen's OUT line.
+    capture: Arc<OutputCapture>,
     /// The newest voice's mod source values, for mod mode's live tick.
     live_sources: Arc<LiveSources>,
     /// Lets the audio thread tell the window to redraw (the waveform moved).
@@ -215,6 +217,8 @@ pub struct SynthParams {
     pub screen_osc2: Arc<AtomicBool>,
     #[persist = "screen_mix"]
     pub screen_mix: Arc<AtomicBool>,
+    #[persist = "screen_out"]
+    pub screen_out: Arc<AtomicBool>,
 }
 
 /// An envelope time knob in milliseconds. It's skewed so the short times get more
@@ -505,6 +509,7 @@ impl Default for SynthParams {
             screen_osc1: Arc::new(AtomicBool::new(true)),
             screen_osc2: Arc::new(AtomicBool::new(true)),
             screen_mix: Arc::new(AtomicBool::new(true)),
+            screen_out: Arc::new(AtomicBool::new(true)),
         }
     }
 }
@@ -678,6 +683,7 @@ impl Default for Johnwave {
             osc2_fade: SwitchFade::default(),
             editor_state: editor::default_state(),
             display: Arc::new(SharedScreen::default()),
+            capture: Arc::new(OutputCapture::default()),
             live_sources: Arc::new(LiveSources::default()),
             repaint: RepaintNotifier::new(),
         }
@@ -767,8 +773,8 @@ impl Johnwave {
         let newest = self.voices.newest_display();
         // The live tick's values go across every block. The window asks for its own
         // redraws while it's showing them, so no repaint request is needed here.
-        self.live_sources.store(newest.map(|(_, sources)| sources));
-        let wave = newest.map(|(wave, _)| wave);
+        self.live_sources.store(newest.map(|v| v.sources));
+        let wave = newest.map(|v| v.wave);
         let changed = match (wave, self.display.load()) {
             (Some(now), Some(shown)) => now.moved(&shown),
             // Started or stopped playing.
@@ -777,6 +783,14 @@ impl Johnwave {
         if changed {
             self.display.store(wave);
             self.repaint.request_repaint();
+        }
+        // The real output changes all the time (detune drifts, the filter moves), so
+        // while the OUT line is showing a note, redraw every block.
+        if let Some(v) = newest {
+            self.capture.mark_cycle(v.osc1_phase, v.osc1_freq, self.sample_rate);
+            if self.params.screen_out.load(Ordering::Relaxed) {
+                self.repaint.request_repaint();
+            }
         }
     }
 
@@ -851,6 +865,7 @@ impl Plugin for Johnwave {
             JohnwaveEditor::new(
                 self.params.clone(),
                 self.display.clone(),
+                self.capture.clone(),
                 self.live_sources.clone(),
                 self.repaint.clone(),
             ),
@@ -899,6 +914,9 @@ impl Plugin for Johnwave {
             self.notes.clear();
             self.mode = mode;
         }
+
+        // Only keep the output for the screen while there's a window to show it.
+        let capturing = self.editor_state.is_open();
 
         for (sample_id, channel_samples) in buffer.iter_samples().enumerate() {
             // Apply all events scheduled at or before this sample.
@@ -954,6 +972,11 @@ impl Plugin for Johnwave {
             };
 
             let (out_l, out_r) = self.voices.next(&p, self.sample_rate);
+            // The OUT line: both sides together, before Gain and Pan, so it's on the same
+            // scale as the screen's other lines.
+            if capturing {
+                self.capture.push((out_l + out_r) / 2.0);
+            }
             let gain = self.params.gain.smoothed.next();
             // Pan works as a balance on the stereo voices. Without unison both sides are
             // the same, so it's the same equal-power pan as ever.
