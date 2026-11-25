@@ -9,6 +9,16 @@ members = ["xtask"]
 [lib]
 crate-type = ["cdylib", "lib"]
 
+[[bin]]
+# Standalone dev app: opens the editor in its own window, no DAW needed.
+# Only built with `--features standalone` (see the `dev` alias in .cargo/config.toml).
+name = "johnwave-standalone"
+path = "src/main.rs"
+required-features = ["standalone"]
+
+[features]
+standalone = ["nice-plug/standalone"]
+
 [dependencies]
 nice-plug = "0.4.2"
 nice-plug-egui = "0.6.0"

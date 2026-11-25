@@ -33,6 +33,36 @@ This writes the plugin bundles to:
 
 Leave off `--release` for a faster, unoptimised debug build.
 
+## UI dev loop (standalone)
+
+For UI work you can run johnwave as its own app, without a DAW:
+
+```sh
+cargo dev
+```
+
+This opens the plugin window and plays through CoreAudio, taking notes from the
+default MIDI input. Options go after the command, e.g. `cargo dev --tempo 90`;
+`cargo dev --help` lists them all.
+
+To rebuild and relaunch on every save, use [watchexec](https://github.com/watchexec/watchexec)
+(`brew install watchexec`):
+
+```sh
+watchexec -r -e rs -- cargo dev
+```
+
+The standalone app uses the same synth and editor code as the plugin, but nothing
+sits around it the way a DAW would:
+
+- the tempo is fixed and there's no song position, so tempo-synced LFOs can't lock to a playing song
+- nothing is saved, so every relaunch starts from default settings
+- nothing changes parameters from outside (no automation)
+- it's a debug build, so it's slower than the release plugin
+
+Use it for layout, drawing, knob feel and the scope. Check automation, tempo
+sync, saving/reloading and performance in Ableton with a bundled build.
+
 ## Deploy (macOS)
 
 Copy the bundles into your user plug-in folders:

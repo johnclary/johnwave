@@ -1,2 +1,4 @@
 [alias]
 xtask = "run --package xtask --release --"
+# Standalone dev app (no DAW). Extra options go after `cargo dev`, e.g. `cargo dev --tempo 90`.
+dev = "run --bin johnwave-standalone --features standalone --"
