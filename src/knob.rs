@@ -17,6 +17,7 @@
 //! It only reads and sets parameters: its own, and in mod mode the matrix slots.
 
 use crate::modulation::{ModSlotParams, ModSource, SlotDest, SlotSource};
+use crate::editor::{ARC_OFF, ARC_RESTING, MOD_ARC_OFF_TARGET, MOD_OUTLINE};
 use nice_plug::prelude::{Param, ParamSetter};
 
 /// Everything about how the knob looks, in one place so it's easy to tweak.
@@ -54,7 +55,7 @@ impl Default for KnobStyle {
             glow: vec![(8.0, 0.10), (4.0, 0.25)],
             // The accent cyan, shared with the rest of the window.
             arc_color: crate::editor::cyan(),
-            track_color: egui::Color32::from_gray(60),
+            track_color: crate::editor::KNOB_TRACK,
             label_text_size: 12.0,
             mod_color: crate::editor::mod_pink(),
             mod_arc_width: 5.0,
@@ -89,9 +90,6 @@ const DRAG_RANGE: f32 = 200.0;
 const FINE_FACTOR: f32 = 10.0;
 /// Space between the bottom of the arc (its two ends) and the top of the name.
 const LABEL_GAP: f32 = 7.0;
-/// How bright the pink is (0..1 of the full mod pink) on a mod target whose section is
-/// switched off, in mod mode. Dim enough to read as off, bright enough to see it's usable.
-const OFF_TARGET_STRENGTH: f32 = 0.55;
 /// Room between a mod target's name and its outline in mod mode (x, y).
 const LABEL_OUTLINE_PAD: egui::Vec2 = egui::vec2(4.0, 1.0);
 
@@ -360,11 +358,11 @@ impl<P: Param> egui::Widget for Knob<'_, P> {
             // off, or one sitting out mod mode, is drawn much dimmer.
             let enabled = ui.is_enabled() && !inert && !self.off;
             let arc_color = if !enabled {
-                style.arc_color.gamma_multiply(0.3)
+                style.arc_color.gamma_multiply(ARC_OFF)
             } else if active {
                 style.arc_color
             } else {
-                style.arc_color.gamma_multiply(0.85)
+                style.arc_color.gamma_multiply(ARC_RESTING)
             };
 
             // Pink for the mod arc and, in mod mode, the label. A switched-off target that
@@ -372,9 +370,9 @@ impl<P: Param> egui::Widget for Knob<'_, P> {
             let mod_color = if enabled {
                 style.mod_color
             } else if armed.is_some() && !inert {
-                style.mod_color.gamma_multiply(OFF_TARGET_STRENGTH)
+                style.mod_color.gamma_multiply(MOD_ARC_OFF_TARGET)
             } else {
-                style.mod_color.gamma_multiply(0.3)
+                style.mod_color.gamma_multiply(ARC_OFF)
             };
 
             // The faint full track.
@@ -468,7 +466,7 @@ impl<P: Param> egui::Widget for Knob<'_, P> {
                 painter.rect_stroke(
                     label_rect.expand2(LABEL_OUTLINE_PAD),
                     3.0,
-                    egui::Stroke::new(1.0, mod_color.gamma_multiply(0.6)),
+                    egui::Stroke::new(1.0, mod_color.gamma_multiply(MOD_OUTLINE)),
                     egui::StrokeKind::Outside,
                 );
             }

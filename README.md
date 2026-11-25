@@ -100,11 +100,21 @@ folder at `target/bundled` and just rebuild + rescan.
 - a second filter
 - 2× oversampling around the filter, to cut back on Drive's aliasing turns
 - small line in center of polar knobs (inside the arc ring)
-- play with the colours. They're all in `src/editor.rs`:
+- play with the colours. They're all in `src/editor.rs`.
+  The **Palette** block near the top holds the base colours:
+  - `BACKGROUND`: the window background
+  - `TEXT`, `MUTED_TEXT`: knob names, and switched-off names / the readout's parameter name
+  - `PANEL_GRAY`: panel outlines, panel titles and sub-labels
+  - `FAINT`: the scope and readout frames, unselected chip outlines, two-way switches, FREQ labels
+  - `GRID`: the scope's centre line and the FREQ view's gridlines
+  - `KNOB_TRACK`: the dim ring a knob's arc fills along
+  - `CHIP_TEXT`, `CHIP_TEXT_HOVER`, `CHIP_TEXT_PRESSED`, `CHIP_HOVER_FILL`, `CHIP_PRESSED_FILL`, `BUTTON_FILL`: chips and the ‹ › buttons
+  - `ARC_RESTING`, `ARC_OFF`, `MOD_ARC_OFF_TARGET`, `MOD_OUTLINE`, `SELECTED_FILL`, `MOD_SELECTED_FILL`, `MOD_ROUTED`: how bright the accent colours are in each state (0..1)
+
+  The accent colours are further down:
   - `cyan()` and `CYAN_HUE`: the main neon cyan (knob arcs, title, chips)
   - `neon_color()`, `HUE_DRIFT`, `SATURATION`: how the scope's lines shift from cyan as Osc 1's Shape goes up
   - `OUT_COLOR`, `OUT_GLOW`: the scope's soft white OUT line (and the FREQ view's spectrum, which uses the same white)
   - `SPECTRUM_FILL`, `SPECTRUM_EDGE`: how bright the spectrum's fill and its top edge are
   - `COMPONENT_STRENGTH`, `TRAIL_STRENGTH`: how faint the thin Osc 1/Osc 2 lines and the trail are
   - `mod_pink()`: the mod colour (mod arcs, mod mode)
-  - `panel_gray()`: panel outlines and titles

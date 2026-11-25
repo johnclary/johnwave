@@ -126,7 +126,7 @@ pub fn draw(ui: &egui::Ui, rect: egui::Rect) {
     crate::editor::screen_frame(
         &painter,
         rect,
-        visuals.weak_text_color().gamma_multiply(0.5),
+        crate::editor::FAINT,
     );
 
     let (name, value) = match &entry {

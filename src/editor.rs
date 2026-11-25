@@ -33,6 +33,67 @@ pub fn default_state() -> Arc<EguiEditorState> {
     EguiEditorState::from_size(LogicalSize::new(WIDTH, HEIGHT), 1.0)
 }
 
+// ---- Palette ---------------------------------------------------------------------------
+// The window's base colours, all in one place. The accent colours live further down:
+// `cyan()`, `CYAN_HUE`, `neon_color()`, `mod_pink()`, `OUT_COLOR`.
+
+/// The window background.
+pub const BACKGROUND: egui::Color32 = egui::Color32::BLACK;
+/// Normal text: knob names.
+pub const TEXT: egui::Color32 = egui::Color32::from_gray(140);
+/// Muted text: switched-off knob names, the readout's parameter name.
+pub const MUTED_TEXT: egui::Color32 = egui::Color32::from_gray(84);
+/// Panel outlines, panel titles and sub-labels ("LFO").
+pub const PANEL_GRAY: egui::Color32 = egui::Color32::from_gray(50);
+/// Faint outlines: the scope and readout frames, unselected chips, two-way switches.
+/// Also the FREQ view's labels.
+pub const FAINT: egui::Color32 = egui::Color32::from_gray(42);
+/// The scope's centre line and the FREQ view's gridlines.
+pub const GRID: egui::Color32 = egui::Color32::from_gray(25);
+/// The dim ring a knob's arc fills along.
+pub const KNOB_TRACK: egui::Color32 = egui::Color32::from_gray(60);
+
+/// Chip and button text: resting, under the mouse, and while pressed.
+pub const CHIP_TEXT: egui::Color32 = egui::Color32::from_gray(215);
+pub const CHIP_TEXT_HOVER: egui::Color32 = egui::Color32::from_gray(245);
+pub const CHIP_TEXT_PRESSED: egui::Color32 = egui::Color32::WHITE;
+/// The fill behind a chip under the mouse, and while pressed.
+pub const CHIP_HOVER_FILL: egui::Color32 = egui::Color32::from_gray(64);
+pub const CHIP_PRESSED_FILL: egui::Color32 = egui::Color32::from_gray(40);
+/// The fill of the ‹ › arrow buttons.
+pub const BUTTON_FILL: egui::Color32 = egui::Color32::from_gray(50);
+
+// How bright the accent colours are drawn in each state, 0..1 (1 = full colour).
+/// A knob's arc at rest (it goes to full while hovered or dragged).
+pub const ARC_RESTING: f32 = 0.85;
+/// A switched-off knob's arc, and its mod arc.
+pub const ARC_OFF: f32 = 0.3;
+/// The mod arc of a switched-off knob that mod mode can still paint.
+pub const MOD_ARC_OFF_TARGET: f32 = 0.55;
+/// The pink outline round a knob's name in mod mode.
+pub const MOD_OUTLINE: f32 = 0.6;
+/// The fill behind a selected cyan chip, and a selected mod chip.
+pub const SELECTED_FILL: f32 = 0.25;
+pub const MOD_SELECTED_FILL: f32 = 0.3;
+/// A mod source chip that's routed somewhere but not armed.
+pub const MOD_ROUTED: f32 = 0.75;
+
+/// Hand the palette's base colours to egui, so its own text and buttons use them.
+fn apply_palette(ctx: &egui::Context, frame: &mut Frame) {
+    frame.set_clear_color(BACKGROUND.into());
+    ctx.all_styles_mut(|style| {
+        let widgets = &mut style.visuals.widgets;
+        widgets.noninteractive.fg_stroke.color = TEXT;
+        widgets.inactive.fg_stroke.color = CHIP_TEXT;
+        widgets.hovered.fg_stroke.color = CHIP_TEXT_HOVER;
+        widgets.active.fg_stroke.color = CHIP_TEXT_PRESSED;
+        widgets.inactive.weak_bg_fill = BUTTON_FILL;
+        widgets.hovered.weak_bg_fill = CHIP_HOVER_FILL;
+        widgets.active.weak_bg_fill = CHIP_PRESSED_FILL;
+        style.visuals.weak_text_color = Some(MUTED_TEXT);
+    });
+}
+
 pub struct JohnwaveEditor {
     /// The same parameters the audio thread reads. `Arc` means both sides share one copy.
     params: Arc<SynthParams>,
@@ -85,10 +146,11 @@ impl NiceEguiApp for JohnwaveEditor {
     /// Called each time the window opens.
     fn build(
         &mut self,
-        _egui_ctx: egui::Context,
+        egui_ctx: egui::Context,
         nice_gui_ctx: GuiContext,
-        _frame: &mut Frame,
+        frame: &mut Frame,
     ) -> Result<(), nice_plug_egui::baseview::HandlerError> {
+        apply_palette(&egui_ctx, frame);
         self.gui_context = Some(nice_gui_ctx);
         Ok(())
     }
@@ -493,9 +555,9 @@ fn mod_chips(ui: &mut egui::Ui, slots: &[ModSlotParams]) {
             let response = ui
                 .scope(|ui| {
                     let selection = &mut ui.visuals_mut().selection;
-                    selection.bg_fill = color.gamma_multiply(0.3);
+                    selection.bg_fill = color.gamma_multiply(MOD_SELECTED_FILL);
                     selection.stroke.color = color;
-                    let dim = color.gamma_multiply(0.75);
+                    let dim = color.gamma_multiply(MOD_ROUTED);
                     let mut text = egui::RichText::new(label);
                     if on {
                         text = text.color(color);
@@ -559,17 +621,17 @@ fn osc_display(
     if in_mod_mode(ui) {
         painter.multiply_opacity(MOD_MODE_FADE);
     }
-    let faint = ui.visuals().weak_text_color().gamma_multiply(0.5);
-    screen_frame(&painter, rect, faint);
+
+    screen_frame(&painter, rect, FAINT);
 
     // The chips across the top, inside the frame, and the view in the space below.
     let inner = rect.shrink(SCREEN_PADDING);
     let (chip_row, view) = inner.split_top_bottom_at_y(inner.top() + SCREEN_CHIP_ROW);
     screen_chips(ui, chip_row, p);
     if p.screen_view.load(Ordering::Relaxed) == SCREEN_VIEW_FREQ {
-        freq_view(&painter, view, p, wave, lines.spectrum, sample_rate, faint);
+        freq_view(&painter, view, p, wave, lines.spectrum, sample_rate);
     } else {
-        wave_view(ui, &painter, view, p, wave, lines.phosphor, lines.trail, faint);
+        wave_view(ui, &painter, view, p, wave, lines.phosphor, lines.trail);
     }
 }
 
@@ -591,7 +653,6 @@ fn wave_view(
     wave: Option<ScreenWave>,
     phosphor: &Phosphor,
     trail: &Trail,
-    faint: egui::Color32,
 ) {
     let show = |flag: &AtomicBool| flag.load(Ordering::Relaxed);
     let (show1, show2, show_mix) = (show(&p.screen_osc1), show(&p.screen_osc2), show(&p.screen_mix));
@@ -600,7 +661,7 @@ fn wave_view(
     // A faint centre line at 0.
     painter.line_segment(
         [waves.left_center(), waves.right_center()],
-        egui::Stroke::new(1.0, faint.gamma_multiply(0.6)),
+        egui::Stroke::new(1.0, GRID),
     );
 
     // The trail first, so the main wave draws on top. Each ghost is just the mix, in
@@ -666,7 +727,6 @@ fn freq_view(
     wave: Option<ScreenWave>,
     spectrum: &Spectrum,
     sample_rate: f32,
-    faint: egui::Color32,
 ) {
     // Where a frequency sits across, 0..1, and how a level in dB maps to a line value.
     let across = |hz: f32| (hz / FREQ_LOW).log2() / (FREQ_HIGH / FREQ_LOW).log2();
@@ -677,7 +737,7 @@ fn freq_view(
 
     // Faint gridlines: 0 dB (unchanged) across, and 100 Hz, 1 kHz and 10 kHz up, each
     // with a tiny label at the bottom.
-    let grid = egui::Stroke::new(1.0, faint.gamma_multiply(0.6));
+    let grid = egui::Stroke::new(1.0, GRID);
     let zero_y = line_y(rect, v_of_db(0.0));
     painter.line_segment([egui::pos2(rect.left(), zero_y), egui::pos2(rect.right(), zero_y)], grid);
     let label_font = egui::FontId::proportional(FREQ_LABEL_SIZE);
@@ -689,7 +749,7 @@ fn freq_view(
             egui::Align2::LEFT_BOTTOM,
             label,
             label_font.clone(),
-            faint,
+            FAINT,
         );
     }
 
@@ -998,7 +1058,7 @@ pub fn cyan() -> egui::Color32 {
 }
 
 /// Hue is a position on the colour wheel, 0..1 (0 = red, ⅓ = green, ½ = cyan, ⅔ = blue).
-const CYAN_HUE: f32 = 0.5;
+const CYAN_HUE: f32 = 0.37;
 /// How far the screen's colour drifts as Shape goes from sine to square. Small, so it
 /// stays a cyan: 0.08 ends at a light azure blue. Try negative to drift toward green.
 const HUE_DRIFT: f32 = 0.08;
@@ -1020,11 +1080,6 @@ const MARGIN_X: f32 = 16.0;
 
 /// Space between knobs in a row.
 const KNOB_GAP: f32 = 14.0;
-
-/// The gray of the panel outlines and their titles.
-fn panel_gray(ui: &egui::Ui) -> egui::Color32 {
-    ui.visuals().weak_text_color().gamma_multiply(0.6)
-}
 
 /// How round a panel's corners are, in points.
 const PANEL_RADIUS: f32 = 6.0;
@@ -1049,7 +1104,7 @@ fn panel<R>(ui: &mut egui::Ui, title: &str, contents: impl FnOnce(&mut egui::Ui)
 /// A panel's title, laid out ready to draw.
 fn panel_title(ui: &egui::Ui, title: &str) -> std::sync::Arc<egui::Galley> {
     let font = egui::FontId::proportional(PANEL_TITLE_SIZE);
-    ui.painter().layout_no_wrap(title.to_uppercase(), font, panel_gray(ui))
+    ui.painter().layout_no_wrap(title.to_uppercase(), font, PANEL_GRAY)
 }
 
 /// A `panel` with its own spacing inside the outline: `sides`, `bottom`, and `title_gap`
@@ -1062,7 +1117,7 @@ fn panel_with<R>(
     title_gap: f32,
     contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
-    let gray = panel_gray(ui);
+    let gray = PANEL_GRAY;
     let galley = panel_title(ui, title);
     let title_size = galley.size();
 
@@ -1166,7 +1221,7 @@ fn sub_label(ui: &mut egui::Ui, text: &str) {
     ui.label(
         egui::RichText::new(text.to_uppercase())
             .size(PANEL_TITLE_SIZE - 1.0)
-            .color(panel_gray(ui)),
+            .color(PANEL_GRAY),
     );
     ui.add_space(2.0);
 }
@@ -1209,7 +1264,7 @@ fn toggle_button(ui: &mut egui::Ui, label: &str, param: &BoolParam, setter: &Par
 /// label. egui only draws a selectable's frame while it's hovered or selected, so this
 /// paints one on top. `color: None` uses the gray of the `switch` frame.
 fn chip_outline(ui: &egui::Ui, response: &egui::Response, color: Option<egui::Color32>) {
-    let color = color.unwrap_or_else(|| ui.visuals().weak_text_color().gamma_multiply(0.5));
+    let color = color.unwrap_or(FAINT);
     let radius = ui.visuals().widgets.inactive.corner_radius;
     ui.painter().rect_stroke(response.rect, radius, egui::Stroke::new(1.0, color), egui::StrokeKind::Inside);
 }
@@ -1219,7 +1274,7 @@ fn chip_outline(ui: &egui::Ui, response: &egui::Response, color: Option<egui::Co
 fn cyan_selection(ui: &mut egui::Ui) {
     let cyan = cyan();
     let selection = &mut ui.visuals_mut().selection;
-    selection.bg_fill = cyan.gamma_multiply(0.25);
+    selection.bg_fill = cyan.gamma_multiply(SELECTED_FILL);
     selection.stroke.color = cyan;
 }
 
@@ -1236,7 +1291,7 @@ fn switch<T: Enum + PartialEq + Copy + 'static>(
     ui.add_enabled_ui(!in_mod_mode(ui), |ui| {
         // A thin outline around both halves, so they read as one switch.
         egui::Frame::new()
-            .stroke(egui::Stroke::new(1.0, ui.visuals().weak_text_color().gamma_multiply(0.5)))
+            .stroke(egui::Stroke::new(1.0, FAINT))
             .corner_radius(4.0)
             .inner_margin(2.0)
             .show(ui, |ui| {
