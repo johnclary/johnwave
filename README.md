@@ -41,16 +41,28 @@ For UI work you can run johnwave as its own app, without a DAW:
 cargo dev
 ```
 
-This opens the plugin window and plays through CoreAudio, taking notes from the
-default MIDI input. Options go after the command, e.g. `cargo dev --tempo 90`;
-`cargo dev --help` lists them all.
+This opens the plugin window and plays through CoreAudio. Options go after the
+command, e.g. `cargo dev --tempo 90`; `cargo dev --help` lists them all.
+
+No MIDI input is connected unless you name one, by its exact device name:
+
+```sh
+cargo dev --midi-input "Oxygen 61"
+```
+
+If the name doesn't match, the app still opens but falls back to a silent mode
+(no audio or MIDI), with the error only in the terminal. To list the MIDI devices
+instead, run `cargo dev --backend core-audio --midi-input ""`.
 
 To rebuild and relaunch on every save, use [watchexec](https://github.com/watchexec/watchexec)
 (`brew install watchexec`):
 
 ```sh
-watchexec -r -e rs -- cargo dev
+watchexec -n -r -e rs -- cargo dev --midi-input "Oxygen 61"
 ```
+
+`-n` passes the arguments straight through. Without it watchexec goes through a
+shell that splits `"Oxygen 61"` at the space.
 
 The standalone app uses the same synth and editor code as the plugin, but nothing
 sits around it the way a DAW would:
