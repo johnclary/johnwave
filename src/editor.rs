@@ -576,7 +576,7 @@ fn mod_chips(ui: &mut egui::Ui, slots: &[ModSlotParams]) {
                 set_armed(ui, if on { None } else { Some(source) });
             }
             let name = SlotSource::of(source).name();
-            let hint = if on { "drag a knob · Esc to exit".to_string() } else { "click to show & paint".to_string() };
+            let hint = if on { "Set a mod target · Double-click target to reset".to_string() } else { "Select modulation source".to_string() };
             crate::readout::report_text(ui, &format!("{name} mod"), hint, &response);
         }
     });
@@ -590,8 +590,9 @@ fn is_routed(slots: &[ModSlotParams], source: ModSource) -> bool {
         .any(|s| s.source.value() == wanted && s.dest.value() != SlotDest::Off && s.amount.value() != 0.0)
 }
 
-/// The readout box is a flat strip in the header.
-const READOUT_WIDTH: f32 = 240.0;
+/// The readout box is a flat strip in the header, as wide as the middle and right
+/// columns together, so long mod mode text fits.
+const READOUT_WIDTH: f32 = MIDDLE_COLUMN_WIDTH + COLUMN_GAP + RIGHT_COLUMN_WIDTH;
 const READOUT_HEIGHT: f32 = 30.0;
 
 /// What the oscillators are playing right now, in a wide "screen" under the readout. It
@@ -1184,7 +1185,7 @@ const PANEL_GAP: f32 = 10.0;
 /// the readout above it, so the screen lines up under it.
 const LEFT_COLUMN_WIDTH: f32 = 310.0;
 const MIDDLE_COLUMN_WIDTH: f32 = 290.0;
-const RIGHT_COLUMN_WIDTH: f32 = READOUT_WIDTH;
+const RIGHT_COLUMN_WIDTH: f32 = 240.0;
 const COLUMN_GAP: f32 = 16.0;
 
 /// How tall the Scope panel is down to the bottom of its screen, outline included. The
