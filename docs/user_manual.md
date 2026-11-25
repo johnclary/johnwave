@@ -364,8 +364,8 @@ Some starting points:
 - Velocity → Bits, negative: harder hits get grittier.
 - Mod Env → Pitch 2: osc 2 starts off-pitch and slides in, a "zap" on every note.
 
-**Mod arcs.** A knob with a route to it shows a pink arc along its ring, covering every
-position all its routes together can push it to, with a small cyan tick marking where
+**Mod arcs.** A knob with a route to it shows an arc in the mod colour (currently yellow) along its ring, covering every
+position all its routes together can push it to, with a small tick in the main accent colour marking where
 the knob itself is set. Pitch routes show on the Coarse knob, Pitch 2 routes on Osc 2's
 Coarse, and Detune routes on the Unison Detune knob.
 
@@ -373,10 +373,10 @@ Coarse, and Detune routes on the Unison Detune knob.
 
 Mod mode sets up modulation by dragging knobs, without going through the matrix.
 
-1. Click a chip in the header (**LFO**, **ENV**, **VEL** or **RAND**). It lights up pink
+1. Click a chip in the header (**LFO**, **ENV**, **VEL** or **RAND**). It lights up in the mod colour
    and the window switches to an x-ray view of that source:
-   - Knobs it already moves show a pink arc for **just that source's** reach.
-   - Knobs it could move but doesn't yet show a faint pink ring.
+   - Knobs it already moves show a mod arc for **just that source's** reach.
+   - Knobs it could move but doesn't yet show a faint ring in the mod colour.
    - Knobs that can't be modulated go dim and ignore the mouse.
 2. Drag a target knob up or down to set how much the source moves it. The knob's own
    value doesn't change; you're setting the route's amount, and the readout shows it
@@ -388,7 +388,7 @@ Mod mode sets up modulation by dragging knobs, without going through the matrix.
 4. Click the lit chip again to leave mod mode. (Esc also works in hosts that pass
    keys through to the plugin; Ableton doesn't.)
 
-**The live tick.** While a note plays in mod mode, a pink tick rides along each arc,
+**The live tick.** While a note plays in mod mode, a tick in the mod colour rides along each arc,
 showing where the source is pushing that knob right now. It follows the newest note,
 like the screen. With the LFO you see it sweep, with ENV rise and fall, with VEL sit
 where the key was struck, and with RAND jump each step.

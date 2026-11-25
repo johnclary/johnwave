@@ -40,7 +40,7 @@ pub struct KnobStyle {
     /// mod matrix can push this knob.
     pub mod_color: egui::Color32,
     /// Thickness of the mod arc. At `arc_width` it covers the value arc completely (its
-    /// glow still shows around the edges); thinner leaves a cyan edge either side.
+    /// glow still shows around the edges); thinner leaves an accent edge either side.
     pub mod_arc_width: f32,
     /// Thickness of the value tick: the short line across the ring marking where the
     /// knob is set, drawn on top of the mod arc so the setting stays readable.
@@ -53,11 +53,11 @@ impl Default for KnobStyle {
             diameter: 44.0,
             arc_width: 5.0,
             glow: vec![(8.0, 0.10), (4.0, 0.25)],
-            // The accent cyan, shared with the rest of the window.
-            arc_color: crate::editor::cyan(),
+            // The accent colour, shared with the rest of the window.
+            arc_color: crate::editor::accent(),
             track_color: crate::editor::KNOB_TRACK,
             label_text_size: 12.0,
-            mod_color: crate::editor::mod_pink(),
+            mod_color: crate::editor::MOD_COLOR,
             mod_arc_width: 5.0,
             tick_width: 2.0,
         }
@@ -117,7 +117,7 @@ pub struct ModTarget<'a> {
     /// `None` if nothing reaches it. In mod mode, only the armed source's routes count.
     pub span: Option<(f32, f32)>,
     /// In mod mode, while a note plays: the knob position the armed source is pushing
-    /// it to right now (0..1). Drawn as a pink tick riding the arc.
+    /// it to right now (0..1). Drawn as a mod-colour tick riding the arc.
     pub live: Option<f32>,
     /// The matrix slots, which mod mode reads and writes.
     pub slots: &'a [ModSlotParams],
@@ -365,8 +365,8 @@ impl<P: Param> egui::Widget for Knob<'_, P> {
                 style.arc_color.gamma_multiply(ARC_RESTING)
             };
 
-            // Pink for the mod arc and, in mod mode, the label. A switched-off target that
-            // mod mode can still paint gets a dimmer pink, so it reads as off but usable.
+            // The mod colour for the mod arc and, in mod mode, the label. A switched-off target
+            // that mod mode can still paint gets it dimmer, so it reads as off but usable.
             let mod_color = if enabled {
                 style.mod_color
             } else if armed.is_some() && !inert {
@@ -399,7 +399,7 @@ impl<P: Param> egui::Widget for Knob<'_, P> {
             }
 
             // The mod arc: drawn along the value arc's ring, after it so it sits on top
-            // (see `mod_arc_width` for how much cyan it leaves showing). Even a tiny span
+            // (see `mod_arc_width` for how much accent it leaves showing). Even a tiny span
             // gets a few points of arc, so a route with a small amount is still visible.
             // In mod mode it covers only the armed source (the x-ray view).
             let span = self.mod_target.as_ref().and_then(|t| t.span);
@@ -418,7 +418,7 @@ impl<P: Param> egui::Widget for Knob<'_, P> {
 
                 // The value tick: a short line straight across the ring at the knob's
                 // value, a little longer than the ring is wide so it pokes out both
-                // sides. Only drawn with a mod arc, since otherwise the cyan arc's end
+                // sides. Only drawn with a mod arc, since otherwise the accent arc's end
                 // already shows the value.
                 let angle = START_ANGLE + SWEEP * value;
                 let direction = egui::vec2(angle.cos(), angle.sin());
@@ -428,8 +428,8 @@ impl<P: Param> egui::Widget for Knob<'_, P> {
                     egui::Stroke::new(style.tick_width, arc_color),
                 );
 
-                // The live tick: where the armed source has the knob right now. Pink, as
-                // thick as the value tick but a little longer, since on the pink arc only
+                // The live tick: where the armed source has the knob right now. In the mod
+                // colour, as thick as the value tick but a little longer, since on the mod arc only
                 // the ends poking out past the ring show.
                 let live = self.mod_target.as_ref().and_then(|t| t.live);
                 if let (Some(live), true) = (live, enabled) {
@@ -445,7 +445,7 @@ impl<P: Param> egui::Widget for Knob<'_, P> {
 
             let visuals = ui.visuals();
             // The name underneath. (The value shows in the readout box instead.) In mod
-            // mode a target's name turns pink, so the targets stand out across the window.
+            // mode a target's name turns the mod colour, so the targets stand out across the window.
             let label_color = if armed.is_some() && !inert && ui.is_enabled() {
                 mod_color
             } else if !enabled {
@@ -460,7 +460,7 @@ impl<P: Param> egui::Widget for Knob<'_, P> {
                 egui::FontId::proportional(style.label_text_size),
                 label_color,
             );
-            // In mod mode, every target gets a thin pink outline round its name, like an
+            // In mod mode, every target gets a thin mod-colour outline round its name, like an
             // unpressed chip, so you can see at a glance where the armed source can go.
             if armed.is_some() && !inert && ui.is_enabled() {
                 painter.rect_stroke(

@@ -35,7 +35,7 @@ pub fn default_state() -> Arc<EguiEditorState> {
 
 // ---- Palette ---------------------------------------------------------------------------
 // The window's base colours, all in one place. The accent colours live further down:
-// `cyan()`, `CYAN_HUE`, `neon_color()`, `mod_pink()`, `OUT_COLOR`.
+// `accent()`, `ACCENT_HUE`, `neon_color()`, `MOD_COLOR`, `OUT_COLOR`.
 
 /// The window background.
 pub const BACKGROUND: egui::Color32 = egui::Color32::BLACK;
@@ -70,9 +70,9 @@ pub const ARC_RESTING: f32 = 0.85;
 pub const ARC_OFF: f32 = 0.3;
 /// The mod arc of a switched-off knob that mod mode can still paint.
 pub const MOD_ARC_OFF_TARGET: f32 = 0.55;
-/// The pink outline round a knob's name in mod mode.
+/// The mod-colour outline round a knob's name in mod mode.
 pub const MOD_OUTLINE: f32 = 0.6;
-/// The fill behind a selected cyan chip, and a selected mod chip.
+/// The fill behind a selected accent chip, and a selected mod chip.
 pub const SELECTED_FILL: f32 = 0.25;
 pub const MOD_SELECTED_FILL: f32 = 0.3;
 /// A mod source chip that's routed somewhere but not armed.
@@ -535,7 +535,7 @@ fn set_armed(ui: &egui::Ui, source: Option<ModSource>) {
 /// Esc, to leave mod mode.
 ///
 /// A chip has three looks: plain (like the other buttons) when the source goes nowhere,
-/// dim pink when it's routed to at least one knob, and lit pink while it's armed.
+/// dimmed in the mod colour when it's routed to at least one knob, and lit while it's armed.
 fn mod_chips(ui: &mut egui::Ui, slots: &[ModSlotParams]) {
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         set_armed(ui, None);
@@ -549,7 +549,7 @@ fn mod_chips(ui: &mut egui::Ui, slots: &[ModSlotParams]) {
             (ModSource::Velocity, "VEL"),
             (ModSource::Random, "RAND"),
         ] {
-            let color = mod_pink();
+            let color = MOD_COLOR;
             let on = armed == Some(source);
             let routed = is_routed(slots, source);
             let response = ui
@@ -588,13 +588,6 @@ fn is_routed(slots: &[ModSlotParams], source: ModSource) -> bool {
     slots
         .iter()
         .any(|s| s.source.value() == wanted && s.dest.value() != SlotDest::Off && s.amount.value() != 0.0)
-}
-
-/// The mod colour: a dusky pink, far enough round the colour wheel from the cyan to
-/// stand apart. #C95DA7, which is 319°, 54%, 79% in a normal colour picker. Used for the
-/// knobs' mod arcs and the mod mode chips.
-pub fn mod_pink() -> egui::Color32 {
-    egui::Color32::from_rgb(0xC9, 0x5D, 0xA7)
 }
 
 /// The readout box is a flat strip in the header.
@@ -791,7 +784,7 @@ fn freq_view(
             // silent middle from being minus infinity.
             v_of_db(20.0 * gain.max(1e-6).log10())
         };
-        neon_curve(painter, rect, curve, FREQ_STEPS, cyan(), 2.0, 1.0);
+        neon_curve(painter, rect, curve, FREQ_STEPS, accent(), 2.0, 1.0);
     }
 }
 
@@ -814,8 +807,9 @@ const FREQ_LABEL_SIZE: f32 = 9.0;
 
 /// How many points the OUT line is made of. About one per screen point across.
 const OUT_POINTS: usize = 240;
-/// The OUT line's soft white, a touch cool so it sits with the cyan.
-const OUT_COLOR: egui::Color32 = egui::Color32::from_rgb(0xE6, 0xEE, 0xF2);
+/// The OUT line's colour, also used for the FREQ view's spectrum. Set to the mod colour
+/// for now; it used to be a soft, cool white: `from_rgb(0xE6, 0xEE, 0xF2)`.
+const OUT_COLOR: egui::Color32 = MOD_COLOR;
 /// How strong the OUT line's glow is, compared with the neon lines'.
 const OUT_GLOW: f32 = 0.5;
 
@@ -835,7 +829,7 @@ fn screen_chips(ui: &mut egui::Ui, row: egui::Rect, p: &SynthParams) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             ui.spacing_mut().button_padding = egui::vec2(4.0, 0.0);
-            cyan_selection(ui);
+            accent_selection(ui);
             let view = p.screen_view.load(Ordering::Relaxed);
             if view == SCREEN_VIEW_FREQ {
                 screen_chip(ui, "FILTER", &p.screen_filter, true);
@@ -859,7 +853,7 @@ fn view_switch(ui: &mut egui::Ui, setting: &AtomicU8, choices: &[(u8, &str)]) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             ui.spacing_mut().button_padding = egui::vec2(4.0, 0.0);
-            cyan_selection(ui);
+            accent_selection(ui);
             for &(choice, label) in choices {
                 let text = egui::RichText::new(label).size(SCREEN_CHIP_TEXT);
                 let response = ui.add(egui::Button::selectable(current == choice, text));
@@ -930,11 +924,11 @@ const KNOB_WAVE_SIZE: f32 = 44.0;
 const KNOB_WAVE_EDGE: f32 = 0.001;
 
 /// One cycle of a wave, in a knob-sized square, for beside a Shape knob. Always the same
-/// cyan as the knob arcs: it shows what the knob is set to, not what's playing.
+/// accent colour as the knob arcs: it shows what the knob is set to, not what's playing.
 fn knob_wave(ui: &mut egui::Ui, wave: impl Fn(f32) -> f32) {
     let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(KNOB_WAVE_SIZE), egui::Sense::hover());
     let painter = ui.painter_at(rect);
-    wave_line(&painter, rect, 1.0, wave, cyan(), 2.0);
+    wave_line(&painter, rect, 1.0, wave, accent(), 2.0);
 }
 
 /// Draw `cycles` cycles of `wave` (phase 0..1 in, -1..1 out) across `rect` as a neon
@@ -1021,10 +1015,10 @@ fn neon_curve(
     painter.add(egui::Shape::line(points, egui::Stroke::new(thickness, color)));
 }
 
-/// The window title in neon cyan with a soft glow, like the knob arcs and waves.
+/// The window title in the accent colour with a soft glow, like the knob arcs and waves.
 fn glow_title(ui: &mut egui::Ui, text: &str) {
     let font = egui::TextStyle::Heading.resolve(ui.style());
-    let galley = ui.painter().layout_no_wrap(text.to_string(), font.clone(), cyan());
+    let galley = ui.painter().layout_no_wrap(text.to_string(), font.clone(), accent());
     let (rect, _) = ui.allocate_exact_size(galley.size(), egui::Sense::hover());
     let painter = ui.painter();
 
@@ -1040,36 +1034,39 @@ fn glow_title(ui: &mut egui::Ui, text: &str) {
                 egui::Align2::LEFT_TOP,
                 text,
                 font.clone(),
-                cyan().gamma_multiply(strength),
+                accent().gamma_multiply(strength),
             );
         }
     }
     // The sharp text on top.
-    painter.galley(rect.min, galley, cyan());
+    painter.galley(rect.min, galley, accent());
 }
 
 /// The title's glow rings: (how far out, in points; strength 0..1).
 const TITLE_GLOW: [(f32, f32); 2] = [(3.0, 0.05), (1.5, 0.12)];
 
-/// The accent colour: the neon cyan of the knob arcs, toggles, readout value and the
-/// small waves.
-pub fn cyan() -> egui::Color32 {
-    egui::ecolor::Hsva::new(CYAN_HUE, 0.9, 1.0, 1.0).into()
+/// The accent colour: the knob arcs, toggles, readout value, title and the small waves.
+pub fn accent() -> egui::Color32 {
+    egui::ecolor::Hsva::new(ACCENT_HUE, 0.9, 1.0, 1.0).into()
 }
 
+/// The mod colour: the knobs' mod arcs and live ticks, the mod chips, and mod mode.
+/// Pick something far round the colour wheel from the accent, so the two stand apart.
+pub const MOD_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 251, 0);
+
 /// Hue is a position on the colour wheel, 0..1 (0 = red, ⅓ = green, ½ = cyan, ⅔ = blue).
-const CYAN_HUE: f32 = 0.37;
-/// How far the screen's colour drifts as Shape goes from sine to square. Small, so it
-/// stays a cyan: 0.08 ends at a light azure blue. Try negative to drift toward green.
+const ACCENT_HUE: f32 = 0.9;
+/// How far the screen's colour drifts round the wheel as Shape goes from sine to square.
+/// Keep it small so it still reads as the accent. Negative drifts the other way.
 const HUE_DRIFT: f32 = 0.08;
 /// Saturation at sine and at square. Less saturated looks paler and icier.
 const SATURATION: (f32, f32) = (0.9, 0.65);
 
-/// The screen wave's colour: the accent cyan at sine, drifting gently toward a paler,
-/// icier blue as Shape goes to square.
+/// The screen wave's colour: the accent at sine, drifting gently round the wheel (and
+/// paler) as Shape goes to square.
 pub fn neon_color(morph: f32) -> egui::Color32 {
     let t = morph.clamp(0.0, 1.0);
-    let hue = CYAN_HUE + HUE_DRIFT * t;
+    let hue = ACCENT_HUE + HUE_DRIFT * t;
     let saturation = SATURATION.0 + (SATURATION.1 - SATURATION.0) * t;
     // Full brightness is what keeps it reading as neon.
     egui::ecolor::Hsva::new(hue, saturation, 1.0, 1.0).into()
@@ -1247,7 +1244,7 @@ fn toggle_button(ui: &mut egui::Ui, label: &str, param: &BoolParam, setter: &Par
     let on = param.value();
     let clicked = ui
         .add_enabled_ui(!in_mod_mode(ui), |ui| {
-            cyan_selection(ui);
+            accent_selection(ui);
             let response = ui.selectable_label(on, label);
             if !on {
                 chip_outline(ui, &response, None);
@@ -1269,13 +1266,13 @@ fn chip_outline(ui: &egui::Ui, response: &egui::Response, color: Option<egui::Co
     ui.painter().rect_stroke(response.rect, radius, egui::Stroke::new(1.0, color), egui::StrokeKind::Inside);
 }
 
-/// Make "selected" buttons in this `ui` a dim cyan fill with bright cyan text, to match
+/// Make "selected" buttons in this `ui` a dim accent fill with bright accent text, to match
 /// the knob arcs. Call it inside `ui.scope` so the change stays with those buttons.
-fn cyan_selection(ui: &mut egui::Ui) {
-    let cyan = cyan();
+fn accent_selection(ui: &mut egui::Ui) {
+    let accent = accent();
     let selection = &mut ui.visuals_mut().selection;
-    selection.bg_fill = cyan.gamma_multiply(SELECTED_FILL);
-    selection.stroke.color = cyan;
+    selection.bg_fill = accent.gamma_multiply(SELECTED_FILL);
+    selection.stroke.color = accent;
 }
 
 /// A switch with one button per choice, like `POLY | MONO`, with the current one lit
@@ -1297,7 +1294,7 @@ fn switch<T: Enum + PartialEq + Copy + 'static>(
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
-                    cyan_selection(ui);
+                    accent_selection(ui);
                     for &(choice, label) in choices {
                         let response = ui.selectable_label(current == choice, label);
                         if response.clicked() && current != choice {

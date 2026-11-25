@@ -112,9 +112,9 @@ folder at `target/bundled` and just rebuild + rescan.
   - `ARC_RESTING`, `ARC_OFF`, `MOD_ARC_OFF_TARGET`, `MOD_OUTLINE`, `SELECTED_FILL`, `MOD_SELECTED_FILL`, `MOD_ROUTED`: how bright the accent colours are in each state (0..1)
 
   The accent colours are further down:
-  - `cyan()` and `CYAN_HUE`: the main neon cyan (knob arcs, title, chips)
-  - `neon_color()`, `HUE_DRIFT`, `SATURATION`: how the scope's lines shift from cyan as Osc 1's Shape goes up
-  - `OUT_COLOR`, `OUT_GLOW`: the scope's soft white OUT line (and the FREQ view's spectrum, which uses the same white)
+  - `accent()` and `ACCENT_HUE`: the main accent colour (knob arcs, title, chips)
+  - `MOD_COLOR`: the mod colour (mod arcs, mod chips, mod mode)
+  - `neon_color()`, `HUE_DRIFT`, `SATURATION`: how the scope's lines shift from the accent as Osc 1's Shape goes up
+  - `OUT_COLOR`, `OUT_GLOW`: the scope's OUT line (and the FREQ view's spectrum, which uses the same colour); currently set to `MOD_COLOR`
   - `SPECTRUM_FILL`, `SPECTRUM_EDGE`: how bright the spectrum's fill and its top edge are
   - `COMPONENT_STRENGTH`, `TRAIL_STRENGTH`: how faint the thin Osc 1/Osc 2 lines and the trail are
-  - `mod_pink()`: the mod colour (mod arcs, mod mode)

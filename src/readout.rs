@@ -141,13 +141,13 @@ pub fn draw(ui: &egui::Ui, rect: egui::Rect) {
         egui::FontId::proportional(11.0),
         visuals.weak_text_color(),
     );
-    // Monospaced, so the digits don't shuffle sideways while you drag. Cyan, like the
+    // Monospaced, so the digits don't shuffle sideways while you drag. The accent, like the
     // knob arcs.
     painter.text(
         egui::pos2(rect.right() - PADDING, rect.center().y),
         egui::Align2::RIGHT_CENTER,
         value,
         egui::FontId::monospace(18.0),
-        crate::editor::cyan(),
+        crate::editor::accent(),
     );
 }
