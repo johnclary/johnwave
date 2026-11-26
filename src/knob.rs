@@ -36,14 +36,16 @@ pub struct KnobStyle {
     pub track_color: egui::Color32,
     /// Size of the name underneath ("Gain").
     pub label_text_size: f32,
-    /// Colour of the mod arc: the stripe along the value arc's ring showing how far the
-    /// mod matrix can push this knob.
+    /// Colour of the mod arc: the outer ring showing how far the mod matrix can push
+    /// this knob.
     pub mod_color: egui::Color32,
-    /// Thickness of the mod arc. At `arc_width` it covers the value arc completely (its
-    /// glow still shows around the edges); thinner leaves an accent edge either side.
+    /// Thickness of the mod arc. It's its own ring just outside the value arc, so it
+    /// never covers it.
     pub mod_arc_width: f32,
-    /// Thickness of the value tick: the short line across the ring marking where the
-    /// knob is set, drawn on top of the mod arc so the setting stays readable.
+    /// Space between the value arc and the mod arc's ring.
+    pub mod_ring_gap: f32,
+    /// Thickness of the live tick: the short mod-colour line marking where the armed
+    /// source is pushing the knob right now.
     pub tick_width: f32,
 }
 
@@ -58,23 +60,31 @@ impl Default for KnobStyle {
             track_color: crate::editor::KNOB_TRACK,
             label_text_size: 12.0,
             mod_color: crate::editor::MOD_COLOR,
-            mod_arc_width: 5.0,
+            mod_arc_width: 2.5,
+            mod_ring_gap: 1.0,
             tick_width: 2.0,
         }
     }
 }
 
 impl KnobStyle {
-    /// The arc's radius: just inside the knob's circle, so the arc and its glow fit.
+    /// The value arc's radius. Worked out from the outside in: the mod ring's outer
+    /// edge reaches `RING_OVERHANG` past the knob's circle, and the value arc sits
+    /// inside that.
     fn radius(&self) -> f32 {
-        self.diameter / 2.0 - self.arc_width / 2.0 - 2.0
+        self.diameter / 2.0 + RING_OVERHANG - self.mod_arc_width - self.mod_ring_gap - self.arc_width / 2.0
     }
 
-    /// How far below the knob's centre the arc reaches. Because of the gap at the
-    /// bottom, the arc's lowest points are its two ends, not the bottom of the circle.
-    /// So the name goes under those ends instead of under the whole circle.
+    /// The mod ring's radius: just outside the value arc, past the gap.
+    fn mod_radius(&self) -> f32 {
+        self.radius() + self.arc_width / 2.0 + self.mod_ring_gap + self.mod_arc_width / 2.0
+    }
+
+    /// How far below the knob's centre the rings reach. Because of the gap at the
+    /// bottom, their lowest points are their ends, not the bottom of the circle. So the
+    /// name goes under the mod ring's ends instead of under the whole circle.
     fn arc_bottom(&self) -> f32 {
-        self.radius() * (START_ANGLE.sin()) + self.arc_width / 2.0
+        self.mod_radius() * (START_ANGLE.sin()) + self.mod_arc_width / 2.0
     }
 }
 
@@ -89,7 +99,10 @@ const DRAG_RANGE: f32 = 200.0;
 /// Holding Shift makes dragging this many times finer.
 const FINE_FACTOR: f32 = 10.0;
 /// Space between the bottom of the arc (its two ends) and the top of the name.
-const LABEL_GAP: f32 = 7.0;
+const LABEL_GAP: f32 = 5.25;
+/// How far the mod ring may poke past the knob's square, in points. A little overhang
+/// lets the value arc stay near its old size without making the knob bigger.
+const RING_OVERHANG: f32 = 1.0;
 /// Room between a mod target's name and its outline in mod mode (x, y).
 const LABEL_OUTLINE_PAD: egui::Vec2 = egui::vec2(4.0, 1.0);
 
@@ -398,10 +411,10 @@ impl<P: Param> egui::Widget for Knob<'_, P> {
                 ));
             }
 
-            // The mod arc: drawn along the value arc's ring, after it so it sits on top
-            // (see `mod_arc_width` for how much accent it leaves showing). Even a tiny span
-            // gets a few points of arc, so a route with a small amount is still visible.
-            // In mod mode it covers only the armed source (the x-ray view).
+            // The mod arc: its own ring just outside the value arc, drawn after the value
+            // arc's glow so it sits cleanly on top of it. Even a tiny span gets a few
+            // points of arc, so a route with a small amount is still visible. In mod mode
+            // it covers only the armed source (the x-ray view).
             let span = self.mod_target.as_ref().and_then(|t| t.span);
             if let Some((lo, hi)) = span {
                 let min_len = 0.02;
@@ -412,32 +425,21 @@ impl<P: Param> egui::Widget for Knob<'_, P> {
                     (lo, hi)
                 };
                 painter.add(egui::Shape::line(
-                    arc_points(center, radius, lo, hi),
+                    arc_points(center, style.mod_radius(), lo, hi),
                     egui::Stroke::new(style.mod_arc_width, mod_color),
                 ));
 
-                // The value tick: a short line straight across the ring at the knob's
-                // value, a little longer than the ring is wide so it pokes out both
-                // sides. Only drawn with a mod arc, since otherwise the accent arc's end
-                // already shows the value.
-                let angle = START_ANGLE + SWEEP * value;
-                let direction = egui::vec2(angle.cos(), angle.sin());
-                let half = style.arc_width / 2.0 + 1.5;
-                painter.line_segment(
-                    [center + direction * (radius - half), center + direction * (radius + half)],
-                    egui::Stroke::new(style.tick_width, arc_color),
-                );
-
-                // The live tick: where the armed source has the knob right now. In the mod
-                // colour, as thick as the value tick but a little longer, since on the mod arc only
-                // the ends poking out past the ring show.
+                // The live tick: where the armed source has the knob right now. A short
+                // mod-colour line across the value arc that pokes inward only, so it never
+                // cuts across the mod ring outside.
                 let live = self.mod_target.as_ref().and_then(|t| t.live);
                 if let (Some(live), true) = (live, enabled) {
                     let angle = START_ANGLE + SWEEP * live;
                     let direction = egui::vec2(angle.cos(), angle.sin());
-                    let half = half + 1.5;
+                    let outer = radius + style.arc_width / 2.0;
+                    let inner = radius - style.arc_width / 2.0 - 3.0;
                     painter.line_segment(
-                        [center + direction * (radius - half), center + direction * (radius + half)],
+                        [center + direction * inner, center + direction * outer],
                         egui::Stroke::new(style.tick_width, mod_color),
                     );
                 }
