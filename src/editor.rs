@@ -44,7 +44,7 @@ pub const TEXT: egui::Color32 = egui::Color32::from_gray(140);
 /// Muted text: switched-off knob names, the readout's parameter name.
 pub const MUTED_TEXT: egui::Color32 = egui::Color32::from_gray(84);
 /// Panel outlines, panel titles and sub-labels ("LFO").
-pub const PANEL_GRAY: egui::Color32 = egui::Color32::from_gray(50);
+pub const PANEL_GRAY: egui::Color32 = egui::Color32::from_gray(65);
 /// Faint outlines: the scope and readout frames, unselected chips, two-way switches.
 /// Also the FREQ view's labels.
 pub const FAINT: egui::Color32 = egui::Color32::from_gray(42);
@@ -267,7 +267,7 @@ impl JohnwaveEditor {
                     sub_label(ui, "Osc 1");
                     knob_row(ui, |ui| {
                         let morph = p.morph.value();
-                        knob_wave(ui, |phase| crate::osc::shape(phase, 0.0, morph));
+                        knob_wave(ui, false, |phase| crate::osc::shape(phase, 0.0, morph));
                         ui.add(Knob::new(&p.morph, &setter, "Shape").mod_target(mod_target(armed, &p.mod_slots,
                             &routes,
                             ModDest::Morph,
@@ -290,7 +290,7 @@ impl JohnwaveEditor {
                     sub_label(ui, "Osc 2");
                     knob_row(ui, |ui| {
                         let morph2 = p.osc2_morph.value();
-                        knob_wave(ui, |phase| crate::osc::shape(phase, 0.0, morph2));
+                        knob_wave(ui, !osc2_on, |phase| crate::osc::shape(phase, 0.0, morph2));
                         ui.add(Knob::new(&p.osc2_morph, &setter, "Shape").mod_target(mod_target(armed, &p.mod_slots,
                             &routes,
                             ModDest::Osc2Morph,
@@ -388,7 +388,7 @@ impl JohnwaveEditor {
                     sub_label(ui, "LFO");
                     knob_row(ui, |ui| {
                         ui.add(Knob::new(&p.lfo_shape, &setter, "Shape"));
-                        knob_wave(ui, |phase| crate::lfo::wave(phase, lfo_shape, KNOB_WAVE_EDGE));
+                        knob_wave(ui, false, |phase| crate::lfo::wave(phase, lfo_shape, KNOB_WAVE_EDGE));
                         ui.add_enabled(!synced, Knob::new(&p.lfo_rate, &setter, "Rate"));
                         // Right of centre fades the LFO in on each note, left fades it out.
                         ui.add(Knob::new(&p.lfo_fade, &setter, "Fade").bipolar());
@@ -925,13 +925,26 @@ pub fn screen_frame(painter: &egui::Painter, rect: egui::Rect, color: egui::Colo
 const KNOB_WAVE_SIZE: f32 = 44.0;
 /// The LFO's wave draws its square with a tiny ramp on each edge, like the real one.
 const KNOB_WAVE_EDGE: f32 = 0.001;
+/// Space between a knob wave's frame and its line: a small `SCREEN_PADDING`.
+const KNOB_WAVE_PADDING: f32 = 5.0;
 
 /// One cycle of a wave, in a knob-sized square, for beside a Shape knob. Always the same
 /// accent colour as the knob arcs: it shows what the knob is set to, not what's playing.
-fn knob_wave(ui: &mut egui::Ui, wave: impl Fn(f32) -> f32) {
+/// It's framed like a tiny copy of the oscillator screen, centre line and all. `off`
+/// dims it like an off knob, for when its section is switched off.
+fn knob_wave(ui: &mut egui::Ui, off: bool, wave: impl Fn(f32) -> f32) {
     let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(KNOB_WAVE_SIZE), egui::Sense::hover());
-    let painter = ui.painter_at(rect);
-    wave_line(&painter, rect, 1.0, wave, accent(), 2.0);
+    let mut painter = ui.painter_at(rect);
+    if off {
+        painter.multiply_opacity(ARC_OFF);
+    }
+    screen_frame(&painter, rect, FAINT);
+    let inner = rect.shrink(KNOB_WAVE_PADDING);
+    painter.line_segment(
+        [inner.left_center(), inner.right_center()],
+        egui::Stroke::new(1.0, GRID),
+    );
+    wave_line(&painter, inner, 1.0, wave, accent(), 2.0);
 }
 
 /// Draw `cycles` cycles of `wave` (phase 0..1 in, -1..1 out) across `rect` as a neon

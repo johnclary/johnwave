@@ -92,29 +92,9 @@ folder at `target/bundled` and just rebuild + rescan.
 
 ## Todo
 
-- readout bugginess in mod mode
-  - show mod adjustments in readout
-  - "mod wizard" text is too long to fit in readout
+- show mod adjustments in readout
 - second lfo and second mod env (and/or use amp env as a mod source)
-- ability to type in param values (with left click?)
+- ability to type in param values (with right click?)
 - a second filter
+- more mod targets: porta glide speed, amp env (adsr)
 - 2× oversampling around the filter, to cut back on Drive's aliasing turns
-- small line in center of polar knobs (inside the arc ring)
-- play with the colours. They're all in `src/editor.rs`.
-  The **Palette** block near the top holds the base colours:
-  - `BACKGROUND`: the window background
-  - `TEXT`, `MUTED_TEXT`: knob names, and switched-off names / the readout's parameter name
-  - `PANEL_GRAY`: panel outlines, panel titles and sub-labels
-  - `FAINT`: the scope and readout frames, unselected chip outlines, two-way switches, FREQ labels
-  - `GRID`: the scope's centre line and the FREQ view's gridlines
-  - `KNOB_TRACK`: the dim ring a knob's arc fills along
-  - `CHIP_TEXT`, `CHIP_TEXT_HOVER`, `CHIP_TEXT_PRESSED`, `CHIP_HOVER_FILL`, `CHIP_PRESSED_FILL`, `BUTTON_FILL`: chips and the ‹ › buttons
-  - `ARC_RESTING`, `ARC_OFF`, `MOD_ARC_OFF_TARGET`, `MOD_OUTLINE`, `SELECTED_FILL`, `MOD_SELECTED_FILL`, `MOD_ROUTED`: how bright the accent colours are in each state (0..1)
-
-  The accent colours are further down:
-  - `accent()` and `ACCENT_HUE`: the main accent colour (knob arcs, title, chips)
-  - `MOD_COLOR`: the mod colour (mod arcs, mod chips, mod mode)
-  - `neon_color()`, `HUE_DRIFT`, `SATURATION`: how the scope's lines shift from the accent as Osc 1's Shape goes up
-  - `OUT_COLOR`, `OUT_GLOW`: the scope's OUT line (and the FREQ view's spectrum, which uses the same colour); currently set to `MOD_COLOR`
-  - `SPECTRUM_FILL`, `SPECTRUM_EDGE`: how bright the spectrum's fill and its top edge are
-  - `COMPONENT_STRENGTH`, `TRAIL_STRENGTH`: how faint the thin Osc 1/Osc 2 lines and the trail are

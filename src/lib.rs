@@ -69,7 +69,7 @@ pub enum VoiceMode {
     #[id = "poly"]
     Poly,
     #[id = "mono"]
-    #[name = "Mono (legato)"]
+    #[name = "Mono"]
     Mono,
 }
 
@@ -349,9 +349,7 @@ impl Default for SynthParams {
                 .with_string_to_value(formatters::s2v_f32_percentage()),
             osc2_coarse: IntParam::new("Osc 2 Coarse", 0, IntRange::Linear { min: -36, max: 36 })
                 .with_unit(" st"),
-            // A few cents off by default, so switching osc 2 on thickens the sound
-            // straight away instead of just doubling it.
-            osc2_fine: FloatParam::new("Osc 2 Fine", 7.0, FloatRange::Linear { min: -100.0, max: 100.0 })
+            osc2_fine: FloatParam::new("Osc 2 Fine", 0.0, FloatRange::Linear { min: -100.0, max: 100.0 })
                 .with_smoother(SmoothingStyle::Linear(20.0))
                 .with_unit(" ct")
                 .with_value_to_string(Arc::new(|ct| format!("{ct:+.0}"))),
