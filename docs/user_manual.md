@@ -401,7 +401,7 @@ Switch their section on first, or use the matrix.
 - **Poly:** up to 8 voices. When all 8 are busy, a new note takes over the oldest voice
   that's already fading out, and failing that the oldest held one. Replaying a key that
   is still sounding reuses its voice instead of doubling it.
-- **Mono (legato):** one voice. Playing a new key while another is held changes the
+- **Mono:** one voice. Playing a new key while another is held changes the
   pitch without restarting the envelopes (sliding there with Porta on). Releasing it
   falls back to the key still held.
   Switching modes releases any notes that are playing.
