@@ -10,104 +10,104 @@ Grouped as they appear in the window, top to bottom.
 
 ### Header
 
-| Param | Range | Default | What it does |
-|---|---|---|---|
-| Voice Mode | Poly / Mono | Poly | Poly plays up to 8 notes at once. Mono plays one note, legato (see below). |
-| LFO / ENV / VEL / RAND | chips | none lit | Click one to enter mod mode for that source, click it again to leave. See [Mod mode](#mod-mode). Not saved with the patch. |
+| Param                  | Range       | Default  | What it does                                                                                                               |
+| ---------------------- | ----------- | -------- | -------------------------------------------------------------------------------------------------------------------------- |
+| Voice Mode             | Poly / Mono | Poly     | Poly plays up to 8 notes at once. Mono plays one note, legato (see below).                                                 |
+| LFO / ENV / VEL / RAND | chips       | none lit | Click one to enter mod mode for that source, click it again to leave. See [Mod mode](#mod-mode). Not saved with the patch. |
 
 ### Oscillator
 
-| Param | Range | Default | What it does |
-|---|---|---|---|
-| Shape | 0–100% | 0% | Morphs the wave: 0% sine, 33% triangle, 67% saw, 100% square, blending smoothly in between. |
+| Param | Range  | Default | What it does                                                                                |
+| ----- | ------ | ------- | ------------------------------------------------------------------------------------------- |
+| Shape | 0–100% | 0%      | Morphs the wave: 0% sine, 33% triangle, 67% saw, 100% square, blending smoothly in between. |
 
 ### Osc 2
 
-| Param | Range | Default | What it does |
-|---|---|---|---|
-| ON | on / off | off | Switches the second oscillator in. While off, its knobs are greyed out and do nothing, and so do mod routes to them. Flipping it fades over 10 ms, so it never clicks. |
-| Shape | 0–100% | 0% | Osc 2's wave, morphing sine → triangle → saw → square like the main Shape. |
-| Coarse | −36 to +36 st | 0 | Osc 2's tuning against osc 1, in semitones. |
-| Fine | −100 to +100 ct | +7 ct | Osc 2's tuning against osc 1, in cents. A few cents off gives a thick, slowly beating sound. |
-| Mix | 0–100% | 50% | Blend between osc 1 (0%) and osc 2 (100%). |
+| Param  | Range           | Default | What it does                                                                                                                                                           |
+| ------ | --------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ON     | on / off        | off     | Switches the second oscillator in. While off, its knobs are greyed out and do nothing, and so do mod routes to them. Flipping it fades over 10 ms, so it never clicks. |
+| Shape  | 0–100%          | 0%      | Osc 2's wave, morphing sine → triangle → saw → square like the main Shape.                                                                                             |
+| Coarse | −36 to +36 st   | 0       | Osc 2's tuning against osc 1, in semitones.                                                                                                                            |
+| Fine   | −100 to +100 ct | 0       | Osc 2's tuning against osc 1, in cents. A few cents off gives a thick, slowly beating sound.                                                                           |
+| Mix    | 0–100%          | 50%     | Blend between osc 1 (0%) and osc 2 (100%).                                                                                                                             |
 
 See [Two oscillators](#two-oscillators).
 
 ### Unison
 
-| Param | Range | Default | What it does |
-|---|---|---|---|
-| Voices | 1–7 | 1 | How many copies of the oscillators each note plays. 1 is no unison. |
-| Detune | 0–100 ct | 25 ct | How far the outer copies are detuned from the note, in cents. The others are spaced evenly in between. Greyed out at 1 voice. |
-| Width | 0–100% | 50% | How far the copies spread across the speakers. Greyed out at 1 voice. |
+| Param  | Range    | Default | What it does                                                                                                                  |
+| ------ | -------- | ------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| Voices | 1–7      | 1       | How many copies of the oscillators each note plays. 1 is no unison.                                                           |
+| Detune | 0–100 ct | 25 ct   | How far the outer copies are detuned from the note, in cents. The others are spaced evenly in between. Greyed out at 1 voice. |
+| Width  | 0–100%   | 50%     | How far the copies spread across the speakers. Greyed out at 1 voice.                                                         |
 
 See [Unison](#unison-1).
 
 ### Tuning
 
-| Param | Range | Default | What it does |
-|---|---|---|---|
-| Coarse | −24 to +24 st | 0 | Transpose in semitones. Moves both oscillators. |
-| Fine | −100 to +100 ct | 0 | Fine tune in cents (100 cents = 1 semitone). Moves both oscillators. |
-| Bend | 0–24 st | 2 | How far the pitch bend wheel reaches, each way. |
-| Porta | Off – 2 s | Off | Portamento: how long each new note takes to slide in from the last one, whatever the interval. |
-| LEGATO | on / off | off | On: only slide when the new key is pressed while another is still held. Off: every note slides. Greyed out while Porta is Off. |
+| Param  | Range           | Default | What it does                                                                                                                   |
+| ------ | --------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| Coarse | −24 to +24 st   | 0       | Transpose in semitones. Moves both oscillators.                                                                                |
+| Fine   | −100 to +100 ct | 0       | Fine tune in cents (100 cents = 1 semitone). Moves both oscillators.                                                           |
+| Bend   | 0–24 st         | 2       | How far the pitch bend wheel reaches, each way.                                                                                |
+| Porta  | Off – 2 s       | Off     | Portamento: how long each new note takes to slide in from the last one, whatever the interval.                                 |
+| LEGATO | on / off        | off     | On: only slide when the new key is pressed while another is still held. Off: every note slides. Greyed out while Porta is Off. |
 
 See [Porta](#porta).
 
 ### Filter
 
-| Param | Range | Default | What it does |
-|---|---|---|---|
-| Cutoff | 20 Hz – 20 kHz | 20 kHz | The frequency the filter works around. |
-| Res | 0–100% | 0% | Resonance: a peak at the cutoff, from none to a strong ring. For BP and NOTCH it narrows the band instead. |
-| Drive | 0–100% | 0% | How hard the sound is pushed into the filter. Thickens and adds grit, and makes high resonance grind instead of ring. 0% is perfectly clean. |
-| Type | LP / HP / BP / NOTCH | LP | Which part of the sound the filter keeps (see [The filter](#the-filter)). |
-| Slope | 12 / 24 | 12 | How steeply it cuts past the cutoff: 12 dB/octave (open) or 24 dB/octave (darker, rounder). |
+| Param  | Range                | Default | What it does                                                                                                                                 |
+| ------ | -------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Cutoff | 20 Hz – 20 kHz       | 20 kHz  | The frequency the filter works around.                                                                                                       |
+| Res    | 0–100%               | 0%      | Resonance: a peak at the cutoff, from none to a strong ring. For BP and NOTCH it narrows the band instead.                                   |
+| Drive  | 0–100%               | 0%      | How hard the sound is pushed into the filter. Thickens and adds grit, and makes high resonance grind instead of ring. 0% is perfectly clean. |
+| Type   | LP / HP / BP / NOTCH | LP      | Which part of the sound the filter keeps (see [The filter](#the-filter)).                                                                    |
+| Slope  | 12 / 24              | 12      | How steeply it cuts past the cutoff: 12 dB/octave (open) or 24 dB/octave (darker, rounder).                                                  |
 
 ### Amp
 
-| Param | Range | Default | What it does |
-|---|---|---|---|
-| A (Attack) | 1 ms – 5 s | 5 ms | Time to rise to full volume. |
-| D (Decay) | 1 ms – 5 s | 300 ms | Time to fall to the sustain level. |
-| S (Sustain) | 0–100% | 70% | Level held while the key is down. |
-| R (Release) | 1 ms – 10 s | 200 ms | Time to fade out after the key is released. |
-| Gain | −48 to 0 dB | −12 dB | Overall output level. |
-| Pan | L100 – R100 | C | Position between the left and right speakers. Type `C`, `L30`, `R100` or a number from −100 to 100. |
+| Param       | Range       | Default | What it does                                                                                        |
+| ----------- | ----------- | ------- | --------------------------------------------------------------------------------------------------- |
+| A (Attack)  | 1 ms – 5 s  | 5 ms    | Time to rise to full volume.                                                                        |
+| D (Decay)   | 1 ms – 5 s  | 300 ms  | Time to fall to the sustain level.                                                                  |
+| S (Sustain) | 0–100%      | 70%     | Level held while the key is down.                                                                   |
+| R (Release) | 1 ms – 10 s | 200 ms  | Time to fade out after the key is released.                                                         |
+| Gain        | −48 to 0 dB | −12 dB  | Overall output level.                                                                               |
+| Pan         | L100 – R100 | C       | Position between the left and right speakers. Type `C`, `L30`, `R100` or a number from −100 to 100. |
 
 ### Mod Envelope
 
-| Param | Range | Default | What it does |
-|---|---|---|---|
-| A (Attack) | 1 ms – 5 s | 1 ms | Time to rise to its peak. |
-| D (Decay) | 1 ms – 10 s | 500 ms | Time to fall to the sustain level. |
-| S (Sustain) | 0–100% | 0% | Level held while the key is down. At 0% it's a one-shot attack/decay. |
-| R (Release) | 1 ms – 10 s | 500 ms | Time to fall back to zero after the key is released. |
+| Param       | Range       | Default | What it does                                                          |
+| ----------- | ----------- | ------- | --------------------------------------------------------------------- |
+| A (Attack)  | 1 ms – 5 s  | 1 ms    | Time to rise to its peak.                                             |
+| D (Decay)   | 1 ms – 10 s | 500 ms  | Time to fall to the sustain level.                                    |
+| S (Sustain) | 0–100%      | 0%      | Level held while the key is down. At 0% it's a one-shot attack/decay. |
+| R (Release) | 1 ms – 10 s | 500 ms  | Time to fall back to zero after the key is released.                  |
 
 What it moves is set in the [Mod Matrix](#mod-matrix).
 
 ### LFO
 
-| Param | Range | Default | What it does |
-|---|---|---|---|
-| Shape | 0–100% | Sine | The LFO's wave, morphing sine → triangle → saw → square like the oscillator. |
-| Rate | 0.05–20 Hz | 1 Hz | Speed when not synced. Greyed out while SYNC is on. |
-| Fade | Out 10 s – Off – In 10 s | Off | Fades the LFO in (right of centre) or out (left) over this long from the start of each note. See [LFO fade](#lfo-fade). |
-| RETRIG | on / off | on | On: each new note restarts the LFO from the start of its cycle. Off: one free-running LFO shared by all notes. |
-| SYNC | on / off | off | Follow the DAW's tempo instead of Rate. |
-| Sync rate | 4 bars – 1/32 | 1/4 | Cycle length when synced, including dotted and triplet values. Greyed out while SYNC is off. |
+| Param     | Range                    | Default | What it does                                                                                                            |
+| --------- | ------------------------ | ------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Shape     | 0–100%                   | Sine    | The LFO's wave, morphing sine → triangle → saw → square like the oscillator.                                            |
+| Rate      | 0.05–20 Hz               | 1 Hz    | Speed when not synced. Greyed out while SYNC is on.                                                                     |
+| Fade      | Out 10 s – Off – In 10 s | Off     | Fades the LFO in (right of centre) or out (left) over this long from the start of each note. See [LFO fade](#lfo-fade). |
+| RETRIG    | on / off                 | on      | On: each new note restarts the LFO from the start of its cycle. Off: one free-running LFO shared by all notes.          |
+| SYNC      | on / off                 | off     | Follow the DAW's tempo instead of Rate.                                                                                 |
+| Sync rate | 4 bars – 1/32            | 1/4     | Cycle length when synced, including dotted and triplet values. Greyed out while SYNC is off.                            |
 
 What it moves is set in the [Mod Matrix](#mod-matrix).
 
 ### Crush
 
-| Param | Range | Default | What it does |
-|---|---|---|---|
-| ON | on / off | off | Switches the bitcrusher in. While off, its knobs are greyed out and do nothing, and so do mod routes to them. Flipping it fades over 10 ms, so it never clicks. |
-| Bits | 1–16 bits, Off | 8 bits | Bit depth. Fewer bits = bigger steps in volume = more grit. 16 shows as Off. |
-| Steps | 2–256 steps, Off | 16 steps | How many flat stairs each wave cycle is cut into, following the note's pitch. Fewer = rougher and more chiptune-like. 256 shows as Off. |
-| Mix | 0–100% | 100% | Blend between the clean (0%) and crushed (100%) sound. |
+| Param | Range            | Default  | What it does                                                                                                                                                    |
+| ----- | ---------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ON    | on / off         | off      | Switches the bitcrusher in. While off, its knobs are greyed out and do nothing, and so do mod routes to them. Flipping it fades over 10 ms, so it never clicks. |
+| Bits  | 1–16 bits, Off   | 8 bits   | Bit depth. Fewer bits = bigger steps in volume = more grit. 16 shows as Off.                                                                                    |
+| Steps | 2–256 steps, Off | 16 steps | How many flat stairs each wave cycle is cut into, following the note's pitch. Fewer = rougher and more chiptune-like. 256 shows as Off.                         |
+| Mix   | 0–100%           | 100%     | Blend between the clean (0%) and crushed (100%) sound.                                                                                                          |
 
 See [The bitcrusher](#the-bitcrusher).
 
@@ -121,11 +121,11 @@ once both are set; until then its amount slider is greyed out.
 You can also set up routes straight from the knobs with [Mod mode](#mod-mode), which
 fills in these slots for you.
 
-| Param | Range | Default | What it does |
-|---|---|---|---|
-| Source | Off, LFO, Mod Env, Velocity, Random | Off | What does the moving (see [Modulation](#modulation)). |
-| Dest | Off, Shape, Shape 2, Osc Mix, Cutoff, Res, Pitch, Pitch 2, Detune, Bits, Steps, Crush Mix, Drive | Off | What gets moved. Shape 2, Osc Mix and Pitch 2 are the Osc 2 knobs, Detune is the Unison knob, Bits, Steps and Crush Mix are the Crush knobs, and Drive is the Filter's Drive knob. |
-| Amount | −100 to +100% | 0 | How far, shown in the destination's unit (like `+2.0 oct` or `−8.0 bits`). Negative flips the direction. |
+| Param  | Range                                                                                            | Default | What it does                                                                                                                                                                       |
+| ------ | ------------------------------------------------------------------------------------------------ | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Source | Off, LFO, Mod Env, Velocity, Random                                                              | Off     | What does the moving (see [Modulation](#modulation)).                                                                                                                              |
+| Dest   | Off, Shape, Shape 2, Osc Mix, Cutoff, Res, Pitch, Pitch 2, Detune, Bits, Steps, Crush Mix, Drive | Off     | What gets moved. Shape 2, Osc Mix and Pitch 2 are the Osc 2 knobs, Detune is the Unison knob, Bits, Steps and Crush Mix are the Crush knobs, and Drive is the Filter's Drive knob. |
+| Amount | −100 to +100%                                                                                    | 0       | How far, shown in the destination's unit (like `+2.0 oct` or `−8.0 bits`). Negative flips the direction.                                                                           |
 
 Hover over or drag any control to see its exact value in the readout at the top right.
 
@@ -180,7 +180,7 @@ other. Osc 2's own Coarse, Fine and Pitch 2 routes add on top.
 
 Some ways to use it:
 
-- **Detune.** Leave Coarse at 0 and set Fine a few cents off (the default +7). The two
+- **Detune.** Leave Coarse at 0 and set Fine a few cents off (try +7). The two
   drift in and out of phase, which gives the thick, moving sound of classic leads and
   pads. More cents = faster beating.
 - **Layers.** Coarse at +12 or +7 adds an octave or a fifth on top; −12 with a sine
@@ -314,7 +314,6 @@ they're good to sweep with modulation.
   settles into a sine. Turn Sustain up to hold the movement for as long as the key is
   down. Release then sets how long it takes to return to zero after you let go.
 
-
 ### Modulation
 
 Each mod matrix slot connects one source to one destination by an amount. Any source can
@@ -334,19 +333,19 @@ each note.
 
 Destinations, and what a slot's amount at 100% means for each:
 
-| Dest | Unit | At 100% |
-|---|---|---|
-| Shape, Shape 2 | Shape range | the whole 0–100% |
-| Osc Mix | Mix range | the whole 0–100% |
-| Cutoff | octaves | 6 oct (+1 oct doubles the cutoff) |
-| Res | Res range | the whole 0–100% |
-| Drive | Drive range | the whole 0–100% |
-| Pitch | semitones | 24 st (both oscillators) |
-| Pitch 2 | semitones | 36 st (osc 2 only) |
-| Detune | cents | 100 ct (the whole Detune range) |
-| Bits | bits | 15 bits (the whole 1–16) |
-| Steps | octaves | 7 oct (+1 oct doubles the steps, −7 takes 256 down to 2) |
-| Crush Mix | Crush Mix range | the whole 0–100% |
+| Dest           | Unit            | At 100%                                                  |
+| -------------- | --------------- | -------------------------------------------------------- |
+| Shape, Shape 2 | Shape range     | the whole 0–100%                                         |
+| Osc Mix        | Mix range       | the whole 0–100%                                         |
+| Cutoff         | octaves         | 6 oct (+1 oct doubles the cutoff)                        |
+| Res            | Res range       | the whole 0–100%                                         |
+| Drive          | Drive range     | the whole 0–100%                                         |
+| Pitch          | semitones       | 24 st (both oscillators)                                 |
+| Pitch 2        | semitones       | 36 st (osc 2 only)                                       |
+| Detune         | cents           | 100 ct (the whole Detune range)                          |
+| Bits           | bits            | 15 bits (the whole 1–16)                                 |
+| Steps          | octaves         | 7 oct (+1 oct doubles the steps, −7 takes 256 down to 2) |
+| Crush Mix      | Crush Mix range | the whole 0–100%                                         |
 
 A positive amount always turns the destination's knob clockwise. For Bits and Steps that
 means cleaner, so use a **negative** amount to add crush. Modulation can bring crush in
@@ -364,10 +363,13 @@ Some starting points:
 - Velocity → Bits, negative: harder hits get grittier.
 - Mod Env → Pitch 2: osc 2 starts off-pitch and slides in, a "zap" on every note.
 
-**Mod arcs.** A knob with a route to it shows an arc in the mod colour (currently yellow) along its ring, covering every
-position all its routes together can push it to, with a small tick in the main accent colour marking where
-the knob itself is set. Pitch routes show on the Coarse knob, Pitch 2 routes on Osc 2's
-Coarse, and Detune routes on the Unison Detune knob.
+**Mod arcs.** A knob with a route to it shows an arc in the mod colour (currently yellow)
+on a thin outer ring just outside its value arc. The arc covers every position all its
+routes together can push it to, while the value arc underneath still shows where the
+knob itself is set. Even a tiny amount gets a short visible arc, and a mod-colour dot in
+the middle of the knob marks it as modulated at a glance. Pitch routes show on the
+Coarse knob, Pitch 2 routes on Osc 2's Coarse, and Detune routes on the Unison Detune
+knob.
 
 ### Mod mode
 
@@ -375,26 +377,35 @@ Mod mode sets up modulation by dragging knobs, without going through the matrix.
 
 1. Click a chip in the header (**LFO**, **ENV**, **VEL** or **RAND**). It lights up in the mod colour
    and the window switches to an x-ray view of that source:
-   - Knobs it already moves show a mod arc for **just that source's** reach.
-   - Knobs it could move but doesn't yet show a faint ring in the mod colour.
+   - Every knob it can move gets its name in the mod colour, outlined like a chip, so
+     you can see at a glance where the source can go.
+   - Knobs it already moves show a mod arc (and dot) for **just that source's** reach.
    - Knobs that can't be modulated go dim and ignore the mouse.
 2. Drag a target knob up or down to set how much the source moves it. The knob's own
    value doesn't change; you're setting the route's amount, and the readout shows it
-   in the destination's unit (like `LFO → Cutoff  +2.0 oct`). Hold Shift for fine control.
-   - The first drag on a new target claims the first free matrix slot. If all 16 are
-     used, the readout says **Matrix full**.
+   in the destination's unit (like `LFO > Cutoff  +2.0 oct`). Hold Shift for fine control.
+   - Hovering a target the source doesn't reach yet shows **drag to add** in the
+     readout. The first drag claims the first free matrix slot. If all 16 are used, the
+     readout says **Matrix full**.
    - Dragging a knob the source already reaches edits that route.
-3. Double-click a target knob to remove that source's routes to it.
+   - A slot whose amount is dragged back to 0 does nothing, so it counts as free and
+     gets reused by the next new route.
+3. To remove that source's routes to a knob, hover the knob: its name turns into
+   **Remove**. Click it, and it lights up as **Sure?** (the readout says _Click again to
+   remove_). Click again to remove. Moving off the knob, dragging it, or waiting a moment
+   cancels, so a stray click mid-performance can't lose a route. Double-click doesn't
+   remove routes.
 4. Click the lit chip again to leave mod mode. (Esc also works in hosts that pass
    keys through to the plugin; Ableton doesn't.)
 
-**The live tick.** While a note plays in mod mode, a tick in the mod colour rides along each arc,
-showing where the source is pushing that knob right now. It follows the newest note,
-like the screen. With the LFO you see it sweep, with ENV rise and fall, with VEL sit
-where the key was struck, and with RAND jump each step.
+**The live tick.** While a note plays in mod mode, a short tick in the mod colour rides
+across the value arc, showing where the source is pushing that knob right now. It
+follows the newest note, like the screen. With the LFO you see it sweep, with ENV rise
+and fall, with VEL sit where the key was struck, and with RAND jump each step.
 
-Greyed-out knobs (like the Osc 2 knobs with Osc 2 off) can't be routed in mod mode.
-Switch their section on first, or use the matrix.
+Greyed-out knobs whose section is off (like the Osc 2 knobs with Osc 2 off) can still be
+routed in mod mode. They stay dimmer so they read as off, and their routes do nothing
+until you switch the section on.
 
 ### Poly and Mono
 
@@ -454,8 +465,38 @@ mode shows the faded value.
 
 ### The screens
 
-- **Oscillator screen** (under the readout): what osc 1 is playing right now, after
-  modulation, drawn as tall as the newest note is loud. Osc 2 isn't shown. Recent shapes leave a short
-  fading trail. With nothing playing it shows a flat line.
-- **Small waves** beside each Shape knob: the shape that knob is set to, without
-  modulation.
+The **oscillator screen** sits under the readout. The **WAVE** and **FREQ** chips
+underneath switch between its two views. In each view, the chips along the top switch
+its lines on and off. All of them start on, and the view and chips are saved with the
+patch.
+
+**WAVE** shows two cycles of the newest note's oscillators right now, after modulation,
+drawn as tall as the note is loud. So it swells on the attack and shrinks away on the
+release.
+
+- **OSC 1** and **OSC 2**: each oscillator at its share of the Mix. They're thin and
+  faint behind MIX, or brighter when MIX is off. OSC 2 greys out while Osc 2 is off.
+- **MIX**: the two blended together, as a bold line on top. Recent mix shapes leave a
+  short fading trail behind it. The line's colour drifts as Shape goes from sine to
+  square.
+- **OUT**: what the synth actually played, after Crush, the filter, unison and any other
+  notes, lined up with osc 1's cycles. It's a thin trace in the mod colour. With none of
+  those effects in play, it lands right on the MIX line.
+
+With nothing playing, WAVE shows just a faint centre line.
+
+**FREQ** shows low to high frequencies left to right, from 20 Hz to 20 kHz, with
+gridlines at 100 Hz, 1 kHz and 10 kHz.
+
+- **FILTER**: the filter's response curve, showing what it lets through at each
+  frequency (−36 to +24 dB, with 0 dB at the faint line across). While a note plays, it
+  follows that note's cutoff and resonance, mod routes and all. Otherwise it shows the
+  knobs.
+- **OUT**: a live spectrum of the output behind the curve, as a soft filled hill. It has
+  its own scale, from 0 dBFS at the top to −90 dBFS at the bottom.
+
+The screen's chips fade and ignore clicks in mod mode.
+
+The **small waves** beside each Shape knob (Osc 1, Osc 2 and the LFO) show the shape
+that knob is set to, without modulation. Each sits in a little frame like a tiny copy of
+the screen, with a centre line. Osc 2's dims while Osc 2 is off.
