@@ -1,7 +1,7 @@
 # johnwave user manual
 
 A small polyphonic synth: two morphing oscillators with stereo unison, a pitch-tracking
-bitcrusher, a resonant multi-type filter, two envelopes, an LFO and a mod matrix to
+bitcrusher, two resonant multi-type filters, two envelopes, an LFO and a mod matrix to
 route them.
 
 ## Parameters
@@ -65,6 +65,18 @@ See [Porta](#porta).
 | Type   | LP / HP / BP / NOTCH | LP      | Which part of the sound the filter keeps (see [The filter](#the-filter)).                                                                    |
 | Slope  | 12 / 24              | 12      | How steeply it cuts past the cutoff: 12 dB/octave (open) or 24 dB/octave (darker, rounder).                                                  |
 
+The **F1** and **F2** tabs at the end of the knob row switch the panel between Filter 1
+and Filter 2. The window remembers which one was showing. Filter 2 has the same Cutoff,
+Res, Drive, Type and Slope controls as Filter 1, plus:
+
+| Param | Range    | Default | What it does                                                                                                |
+| ----- | -------- | ------- | ----------------------------------------------------------------------------------------------------------- |
+| ON    | on / off | off     | Switches Filter 2 into the sound. While it's off its controls grey out and the F2 tab's label dims.         |
+| PAR   | on / off | off     | Off: Filter 1 feeds Filter 2 (serial). On: both filter the same sound side by side, mixed 50/50 (parallel). |
+
+Filter 2 starts as a high-pass at 20 Hz, so in serial switching it on changes nothing
+until you raise its Cutoff. See [Two filters](#two-filters).
+
 ### Amp
 
 | Param       | Range       | Default | What it does                                                                                        |
@@ -121,11 +133,11 @@ once both are set; until then its amount slider is greyed out.
 You can also set up routes straight from the knobs with [Mod mode](#mod-mode), which
 fills in these slots for you.
 
-| Param  | Range                                                                                            | Default | What it does                                                                                                                                                                       |
-| ------ | ------------------------------------------------------------------------------------------------ | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Source | Off, LFO, Mod Env, Velocity, Random                                                              | Off     | What does the moving (see [Modulation](#modulation)).                                                                                                                              |
-| Dest   | Off, Shape, Shape 2, Osc Mix, Cutoff, Res, Pitch, Pitch 2, Detune, Bits, Steps, Crush Mix, Drive | Off     | What gets moved. Shape 2, Osc Mix and Pitch 2 are the Osc 2 knobs, Detune is the Unison knob, Bits, Steps and Crush Mix are the Crush knobs, and Drive is the Filter's Drive knob. |
-| Amount | −100 to +100%                                                                                    | 0       | How far, shown in the destination's unit (like `+2.0 oct` or `−8.0 bits`). Negative flips the direction.                                                                           |
+| Param  | Range                                                                                                                      | Default | What it does                                                                                                                                                                                                                       |
+| ------ | -------------------------------------------------------------------------------------------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Source | Off, LFO, Mod Env, Velocity, Random                                                                                        | Off     | What does the moving (see [Modulation](#modulation)).                                                                                                                                                                              |
+| Dest   | Off, Shape, Shape 2, Osc Mix, Cutoff, Res, Pitch, Pitch 2, Detune, Bits, Steps, Crush Mix, Drive, Cutoff 2, Res 2, Drive 2 | Off     | What gets moved. Shape 2, Osc Mix and Pitch 2 are the Osc 2 knobs, Detune is the Unison knob, Bits, Steps and Crush Mix are the Crush knobs, Drive is Filter 1's Drive knob, and Cutoff 2, Res 2 and Drive 2 are Filter 2's knobs. |
+| Amount | −100 to +100%                                                                                                              | 0       | How far, shown in the destination's unit (like `+2.0 oct` or `−8.0 bits`). Negative flips the direction.                                                                                                                           |
 
 Hover over or drag any control to see its exact value in the readout at the top right.
 
@@ -137,8 +149,11 @@ Each note gets its own voice, and every voice runs the same chain:
 
 ```
 osc 1 + osc 2 (blended by Mix), × unison copies spread left/right
-  → bitcrusher → filter → amp envelope × velocity
+  → bitcrusher → filter 1 (→ filter 2, when on) → amp envelope × velocity
 ```
+
+With Filter 2's PAR on, filters 1 and 2 sit side by side instead, both fed by the
+bitcrusher, and their outputs are mixed 50/50.
 
 Each voice is stereo: everything after the oscillators runs once for the left side and
 once for the right. Without unison (or with Width at 0) both sides are identical.
@@ -279,6 +294,32 @@ removes it.
 Cutoff modulation is measured in octaves, so a given amount sounds the same anywhere in
 the range: +1 octave always doubles the cutoff.
 
+### Two filters
+
+Filter 2 is a second copy of the same filter, with its own Cutoff, Res, Drive, Type and
+Slope. It's off by default; switch it on with **ON** on the F2 tab.
+
+- **Serial** (PAR off): the sound goes through Filter 1, then Filter 2. Each one cuts
+  on top of the other. The classic use is a high-pass into a low-pass: Filter 2's
+  high-pass trims the lows while Filter 1's low-pass shapes the top, leaving a band you
+  can move from both ends.
+- **Parallel** (PAR on): both filters get the same sound and their outputs are mixed
+  50/50. Two band-passes at different cutoffs give two resonant humps, like the
+  formants of a voice; sweep one to get vowel-like "wah" and "yow" sounds. A low-pass
+  with Filter 2 left wide open blends a filtered sound with the full one.
+
+In parallel, the two filters' outputs can partly cancel where they overlap. A low-pass
+and a high-pass at the same cutoff leave a dip there rather than a flat line. The FREQ
+screen's curve shows this exactly.
+
+Switching Filter 2 on or off, or flipping PAR, fades over 10 ms, so it doesn't click
+mid-note. While Filter 2 is off it isn't run at all and costs no CPU.
+
+Filter 2's knobs are mod destinations too (**Cutoff 2**, **Res 2**, **Drive 2**), in the
+same units as Filter 1's. In mod mode the F1 and F2 tabs stay clickable, so you can arm
+a source, switch to F2 and drag its knobs. A tab whose knobs have routes, but isn't
+showing, gets a small dot in the mod colour, so no route is ever out of sight.
+
 ### The bitcrusher
 
 The crusher makes the sound lo-fi in two separate ways, one per knob:
@@ -333,19 +374,21 @@ each note.
 
 Destinations, and what a slot's amount at 100% means for each:
 
-| Dest           | Unit            | At 100%                                                  |
-| -------------- | --------------- | -------------------------------------------------------- |
-| Shape, Shape 2 | Shape range     | the whole 0–100%                                         |
-| Osc Mix        | Mix range       | the whole 0–100%                                         |
-| Cutoff         | octaves         | 6 oct (+1 oct doubles the cutoff)                        |
-| Res            | Res range       | the whole 0–100%                                         |
-| Drive          | Drive range     | the whole 0–100%                                         |
-| Pitch          | semitones       | 24 st (both oscillators)                                 |
-| Pitch 2        | semitones       | 36 st (osc 2 only)                                       |
-| Detune         | cents           | 100 ct (the whole Detune range)                          |
-| Bits           | bits            | 15 bits (the whole 1–16)                                 |
-| Steps          | octaves         | 7 oct (+1 oct doubles the steps, −7 takes 256 down to 2) |
-| Crush Mix      | Crush Mix range | the whole 0–100%                                         |
+| Dest           | Unit                 | At 100%                                                  |
+| -------------- | -------------------- | -------------------------------------------------------- |
+| Shape, Shape 2 | Shape range          | the whole 0–100%                                         |
+| Osc Mix        | Mix range            | the whole 0–100%                                         |
+| Cutoff         | octaves              | 6 oct (+1 oct doubles the cutoff)                        |
+| Res            | Res range            | the whole 0–100%                                         |
+| Drive          | Drive range          | the whole 0–100%                                         |
+| Cutoff 2       | octaves              | 6 oct, like Cutoff                                       |
+| Res 2, Drive 2 | Res and Drive ranges | the whole 0–100%                                         |
+| Pitch          | semitones            | 24 st (both oscillators)                                 |
+| Pitch 2        | semitones            | 36 st (osc 2 only)                                       |
+| Detune         | cents                | 100 ct (the whole Detune range)                          |
+| Bits           | bits                 | 15 bits (the whole 1–16)                                 |
+| Steps          | octaves              | 7 oct (+1 oct doubles the steps, −7 takes 256 down to 2) |
+| Crush Mix      | Crush Mix range      | the whole 0–100%                                         |
 
 A positive amount always turns the destination's knob clockwise. For Bits and Steps that
 means cleaner, so use a **negative** amount to add crush. Modulation can bring crush in
@@ -489,13 +532,14 @@ With nothing playing, WAVE shows just a faint centre line.
 gridlines at 100 Hz, 1 kHz and 10 kHz.
 
 - **FILTER**: the filter's response curve, showing what it lets through at each
-  frequency (−36 to +24 dB, with 0 dB at the faint line across). While a note plays, it
-  follows that note's cutoff and resonance, mod routes and all. Otherwise it shows the
-  knobs.
+  frequency (−36 to +24 dB, with 0 dB at the faint line across). With Filter 2 on it
+  shows both filters together, serial or parallel. While a note plays, it follows that
+  note's cutoffs and resonances, mod routes and all. Otherwise it shows the knobs.
 - **OUT**: a live spectrum of the output behind the curve, as a soft filled hill. It has
   its own scale, from 0 dBFS at the top to −90 dBFS at the bottom.
 
-The screen's chips fade and ignore clicks in mod mode.
+The screen's chips fade and ignore clicks in mod mode. (The Filter panel's F1 and F2
+tabs don't: see [Two filters](#two-filters).)
 
 The **small waves** beside each Shape knob (Osc 1, Osc 2 and the LFO) show the shape
 that knob is set to, without modulation. Each sits in a little frame like a tiny copy of

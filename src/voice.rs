@@ -90,6 +90,15 @@ pub struct VoiceParams {
     pub cutoff_hz: f32,
     pub resonance: f32,
     pub filter_drive: f32,
+    /// The Filter 2 switch: 0 = off, 1 = on, fading in between.
+    pub filter2_amount: f32,
+    /// The PAR switch: 0 = serial, 1 = parallel, fading in between.
+    pub filter_parallel: f32,
+    pub filter2_type: FilterType,
+    pub filter2_slope: FilterSlope,
+    pub cutoff2_hz: f32,
+    pub resonance2: f32,
+    pub filter2_drive: f32,
     /// The Crush switch: 0 = bypassed, 1 = on, fading in between.
     pub crush_amount: f32,
     /// Bitcrusher bit depth (`crush::MIN_BITS..=MAX_BITS`).
@@ -138,8 +147,9 @@ pub struct Voice {
     osc2: [MorphOsc; MAX_COPIES],
     /// State of a tiny random number generator, for the oscillators' start phases.
     rng: u32,
-    /// One filter and one crusher per side: [left, right].
+    /// One of each filter and one crusher per side: [left, right].
     filter: [Filter; 2],
+    filter2: [Filter; 2],
     crusher: [Crusher; 2],
     amp_env: Adsr,
     mod_env: Adsr,
@@ -173,6 +183,7 @@ impl Default for Voice {
             osc2: Default::default(),
             rng: 0x2545_F491, // any non-zero starting value works
             filter: Default::default(),
+            filter2: Default::default(),
             crusher: Default::default(),
             amp_env: Adsr::default(),
             mod_env: Adsr::default(),
@@ -198,6 +209,7 @@ impl Voice {
         // sounding keeps their memory, so the takeover doesn't click.
         if !self.is_active() {
             self.filter.iter_mut().for_each(Filter::reset);
+            self.filter2.iter_mut().for_each(Filter::reset);
             self.crusher.iter_mut().for_each(Crusher::reset);
             // A silent voice can also start its oscillators anywhere without a click.
             // Each starts at a random point in its cycle: if the unison copies started
@@ -302,6 +314,7 @@ impl Voice {
         self.osc1.iter_mut().for_each(MorphOsc::reset);
         self.osc2.iter_mut().for_each(MorphOsc::reset);
         self.filter.iter_mut().for_each(Filter::reset);
+        self.filter2.iter_mut().for_each(Filter::reset);
         self.crusher.iter_mut().for_each(Crusher::reset);
         self.amp_env.reset();
         self.mod_env.reset();
@@ -398,6 +411,11 @@ impl Voice {
         let cutoff = p.cutoff_hz * off.cutoff_oct.exp2();
         let resonance = p.resonance + off.resonance;
         let drive = p.filter_drive + off.drive;
+        // With the Filter 2 switch fully off it isn't run at all.
+        let filter2_on = p.filter2_amount > 0.0;
+        let cutoff2 = p.cutoff2_hz * off.cutoff2_oct.exp2();
+        let resonance2 = p.resonance2 + off.resonance2;
+        let drive2 = p.filter2_drive + off.drive2;
 
         let amp = self.amp_env.next(&p.amp_env, sample_rate);
         self.screen = ScreenWave {
@@ -409,6 +427,8 @@ impl Voice {
             gain2,
             cutoff_hz: cutoff,
             resonance,
+            cutoff2_hz: cutoff2,
+            resonance2,
         };
 
         // Each side gets its own crusher and filter. Fed the same signal (one copy, or
@@ -419,8 +439,9 @@ impl Voice {
                 let crushed = self.crusher[side].process(*x, bits, hold);
                 *x += (crushed - *x) * mix;
             }
+            let dry = *x;
             *x = self.filter[side].process(
-                *x,
+                dry,
                 p.filter_type,
                 p.filter_slope,
                 cutoff,
@@ -428,6 +449,25 @@ impl Voice {
                 drive,
                 sample_rate,
             );
+            if filter2_on {
+                // Serial feeds Filter 1's output into Filter 2 and keeps only Filter 2's.
+                // Parallel feeds Filter 2 the same sound as Filter 1 and mixes the two
+                // 50/50. Mid-fade between them, both blend smoothly.
+                let par = p.filter_parallel;
+                let input2 = *x + (dry - *x) * par;
+                let out2 = self.filter2[side].process(
+                    input2,
+                    p.filter2_type,
+                    p.filter2_slope,
+                    cutoff2,
+                    resonance2,
+                    drive2,
+                    sample_rate,
+                );
+                let routed = out2 + ((*x + out2) * 0.5 - out2) * par;
+                // Fading the switch off slides back to Filter 1 alone.
+                *x += (routed - *x) * p.filter2_amount;
+            }
             *x *= self.screen.level;
         }
         (sides[0], sides[1])
@@ -566,6 +606,14 @@ mod tests {
         cutoff_hz: 20_000.0,
         resonance: 0.0,
         filter_drive: 0.0,
+        // Filter 2 off, set up as it starts: a high-pass at the bottom, in serial.
+        filter2_amount: 0.0,
+        filter_parallel: 0.0,
+        filter2_type: FilterType::HighPass,
+        filter2_slope: FilterSlope::Db12,
+        cutoff2_hz: 20.0,
+        resonance2: 0.0,
+        filter2_drive: 0.0,
         // Switched on, but with both knobs at their top ("Off"), so the tests start
         // from the clean sound and turn on only the crush they're testing.
         crush_amount: 1.0,
@@ -642,6 +690,71 @@ mod tests {
         let closed = brightness(&with(-4.0)); // pushed down to ~19 Hz
         assert!(opened > plain * 2.0, "opened {opened} vs plain {plain}");
         assert!(closed < plain * 0.5, "closed {closed} vs plain {plain}");
+    }
+
+    #[test]
+    fn filter2_off_changes_nothing() {
+        // A square, with Filter 2 set to a dark low-pass but switched off.
+        let plain = VoiceParams { morph: 1.0, ..PARAMS };
+        let dark_but_off = VoiceParams {
+            filter2_type: FilterType::LowPass,
+            cutoff2_hz: 200.0,
+            ..plain
+        };
+        assert_eq!(brightness(&plain), brightness(&dark_but_off));
+    }
+
+    #[test]
+    fn filter2_in_serial_filters_filter1s_output() {
+        // Filter 1 wide open, Filter 2 a 300 Hz low-pass: the sound gets darker.
+        let plain = VoiceParams { morph: 1.0, ..PARAMS };
+        let serial = VoiceParams {
+            filter2_amount: 1.0,
+            filter2_type: FilterType::LowPass,
+            cutoff2_hz: 300.0,
+            ..plain
+        };
+        let (plain, serial) = (brightness(&plain), brightness(&serial));
+        assert!(serial < plain * 0.5, "serial {serial} vs plain {plain}");
+    }
+
+    #[test]
+    fn lfo_moves_filter2s_cutoff() {
+        // Filter 2 a 300 Hz low-pass in serial, with the shared LFO held at its peak.
+        let with = |octaves: f32| {
+            let mut routes = Routes::EMPTY;
+            routes.add(ModSource::Lfo, ModDest::Cutoff2, octaves);
+            VoiceParams {
+                morph: 1.0,
+                filter2_amount: 1.0,
+                filter2_type: FilterType::LowPass,
+                cutoff2_hz: 300.0,
+                shared_lfo: Some(LfoOut { wave: 1.0, random: 0.0 }),
+                routes,
+                ..PARAMS
+            }
+        };
+        let opened = brightness(&with(4.0));
+        let plain = brightness(&with(0.0));
+        assert!(opened > plain * 2.0, "opened {opened} vs plain {plain}");
+    }
+
+    #[test]
+    fn filter2_in_parallel_mixes_both() {
+        // Filter 1 a dark 200 Hz low-pass; Filter 2 a high-pass at 20 Hz, which lets
+        // almost everything through. In serial that's still dark. In parallel half the
+        // mix is the unfiltered sound, so it's much brighter.
+        let base = VoiceParams {
+            morph: 1.0,
+            cutoff_hz: 200.0,
+            filter2_amount: 1.0,
+            ..PARAMS
+        };
+        let serial = brightness(&base);
+        let parallel = brightness(&VoiceParams { filter_parallel: 1.0, ..base });
+        let filter1_alone = brightness(&VoiceParams { filter2_amount: 0.0, ..base });
+        assert!((serial - filter1_alone).abs() < filter1_alone * 0.1, "serial {serial} vs F1 {filter1_alone}");
+        assert!(parallel > serial * 3.0, "parallel {parallel} vs serial {serial}");
     }
 
     /// Pitch of a sine voice playing A3 (220 Hz), counted from upward zero crossings

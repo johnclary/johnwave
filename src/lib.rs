@@ -49,6 +49,11 @@ pub struct Johnwave {
     crush_fade: SwitchFade,
     /// The same for the Osc 2 switch.
     osc2_fade: SwitchFade,
+    /// The same for the Filter 2 switch.
+    filter2_fade: SwitchFade,
+    /// The PAR switch as a 0..1 fade (1 = parallel), so it doesn't click
+    /// either.
+    routing_fade: SwitchFade,
     /// The plugin window's size and whether it's open.
     editor_state: Arc<EguiEditorState>,
     /// What the window's screen shows: the newest voice's oscillators, or nothing when
@@ -148,6 +153,24 @@ pub struct SynthParams {
     #[id = "filter_drive"]
     pub filter_drive: FloatParam,
 
+    // The second filter. Off by default, so older patches sound the same.
+    #[id = "filter2_on"]
+    pub filter2_on: BoolParam,
+    /// Off = serial (Filter 1 into Filter 2). On = parallel (side by side, mixed 50/50).
+    #[id = "filter_parallel"]
+    pub filter_parallel: BoolParam,
+    /// Filter 2's type, slope, cutoff, resonance and drive, like Filter 1's.
+    #[id = "filter2_type"]
+    pub filter2_type: EnumParam<FilterType>,
+    #[id = "filter2_slope"]
+    pub filter2_slope: EnumParam<FilterSlope>,
+    #[id = "cutoff2"]
+    pub cutoff2: FloatParam,
+    #[id = "resonance2"]
+    pub resonance2: FloatParam,
+    #[id = "filter2_drive"]
+    pub filter2_drive: FloatParam,
+
     // Bitcrusher, applied in each voice before the filter (see `crush.rs`).
     /// The on/off switch. While off, the knobs (and routes to them) do nothing.
     #[id = "crush_on"]
@@ -231,6 +254,9 @@ pub struct SynthParams {
     /// Which view the screen shows: `editor::SCREEN_VIEW_WAVE` or `SCREEN_VIEW_FREQ`.
     #[persist = "screen_view"]
     pub screen_view: Arc<AtomicU8>,
+    /// Which filter the Filter panel shows: `editor::FILTER_TAB_1` or `FILTER_TAB_2`.
+    #[persist = "filter_tab"]
+    pub filter_tab: Arc<AtomicU8>,
 }
 
 /// An envelope time knob in milliseconds. It's skewed so the short times get more
@@ -434,6 +460,36 @@ impl Default for SynthParams {
                 .with_value_to_string(formatters::v2s_f32_percentage(0))
                 .with_string_to_value(formatters::s2v_f32_percentage()),
 
+            // Off by default, so older patches sound the same. It starts as a high-pass
+            // at the bottom, so in Serial switching it on changes nothing until Cutoff 2
+            // comes up: the classic high-pass into low-pass.
+            filter2_on: BoolParam::new("Filter 2", false),
+            filter_parallel: BoolParam::new("Filter Parallel", false),
+            filter2_type: EnumParam::new("Filter 2 Type", FilterType::HighPass),
+            filter2_slope: EnumParam::new("Filter 2 Slope", FilterSlope::Db12),
+            cutoff2: FloatParam::new(
+                "Cutoff 2",
+                20.0,
+                FloatRange::Skewed {
+                    min: 20.0,
+                    max: 20_000.0,
+                    factor: FloatRange::skew_factor(-2.0),
+                },
+            )
+            .with_smoother(SmoothingStyle::Logarithmic(20.0))
+            .with_value_to_string(formatters::v2s_f32_hz_then_khz(0))
+            .with_string_to_value(formatters::s2v_f32_hz_then_khz()),
+            resonance2: FloatParam::new("Resonance 2", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 })
+                .with_smoother(SmoothingStyle::Linear(20.0))
+                .with_unit("%")
+                .with_value_to_string(formatters::v2s_f32_percentage(0))
+                .with_string_to_value(formatters::s2v_f32_percentage()),
+            filter2_drive: FloatParam::new("Drive 2", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 })
+                .with_smoother(SmoothingStyle::Linear(20.0))
+                .with_unit("%")
+                .with_value_to_string(formatters::v2s_f32_percentage(0))
+                .with_string_to_value(formatters::s2v_f32_percentage()),
+
             // Off by default, so older patches sound the same. The knobs start somewhere
             // you can hear, so switching Crush on does something straight away.
             crush_on: BoolParam::new("Crush", false),
@@ -523,6 +579,7 @@ impl Default for SynthParams {
             screen_filter: Arc::new(AtomicBool::new(true)),
             screen_spectrum: Arc::new(AtomicBool::new(true)),
             screen_view: Arc::new(AtomicU8::new(editor::SCREEN_VIEW_WAVE)),
+            filter_tab: Arc::new(AtomicU8::new(editor::FILTER_TAB_1)),
         }
     }
 }
@@ -694,6 +751,8 @@ impl Default for Johnwave {
             bend: centred_bend(),
             crush_fade: SwitchFade::default(),
             osc2_fade: SwitchFade::default(),
+            filter2_fade: SwitchFade::default(),
+            routing_fade: SwitchFade::default(),
             editor_state: editor::default_state(),
             display: Arc::new(SharedScreen::default()),
             capture: Arc::new(OutputCapture::default()),
@@ -903,6 +962,8 @@ impl Plugin for Johnwave {
         // Start at the switches' positions, with no fade.
         self.crush_fade.reset(self.params.crush_on.value());
         self.osc2_fade.reset(self.params.osc2_on.value());
+        self.filter2_fade.reset(self.params.filter2_on.value());
+        self.routing_fade.reset(self.params.filter_parallel.value());
     }
 
     fn process(
@@ -915,9 +976,11 @@ impl Plugin for Johnwave {
         let shared_lfo_on = !self.params.lfo_retrigger.value();
         let mut next_event = context.next_event();
 
-        // The Crush and Osc 2 switches fade rather than jump.
+        // The Crush, Osc 2, Filter 2 and PAR switches fade rather than jump.
         self.crush_fade.update(self.params.crush_on.value(), self.sample_rate);
         self.osc2_fade.update(self.params.osc2_on.value(), self.sample_rate);
+        self.filter2_fade.update(self.params.filter2_on.value(), self.sample_rate);
+        self.routing_fade.update(self.params.filter_parallel.value(), self.sample_rate);
 
         // Switching between Poly and Mono releases whatever was playing, so no voice
         // gets stuck on.
@@ -985,6 +1048,13 @@ impl Plugin for Johnwave {
                 cutoff_hz: self.params.cutoff.smoothed.next(),
                 resonance: self.params.resonance.smoothed.next(),
                 filter_drive: self.params.filter_drive.smoothed.next(),
+                filter2_amount: self.filter2_fade.next(),
+                filter_parallel: self.routing_fade.next(),
+                filter2_type: self.params.filter2_type.value(),
+                filter2_slope: self.params.filter2_slope.value(),
+                cutoff2_hz: self.params.cutoff2.smoothed.next(),
+                resonance2: self.params.resonance2.smoothed.next(),
+                filter2_drive: self.params.filter2_drive.smoothed.next(),
                 crush_amount: self.crush_fade.next(),
                 crush_bits: self.params.crush_bits.smoothed.next(),
                 crush_steps: self.params.crush_steps.smoothed.next(),

@@ -16,6 +16,7 @@
 //! - Cutoff: octaves (+1 doubles the cutoff, −1 halves it)
 //! - Resonance: resonance units (1.0 = the whole 0–100% range)
 //! - Drive (filter drive): drive units (1.0 = the whole 0–100% range)
+//! - Cutoff 2, Res 2, Drive 2 (Filter 2): the same units as Filter 1's
 //! - Pitch (both oscillators), Osc 2 Pitch (osc 2 only): semitones
 //! - Detune (unison spread): cents
 //! - Bits (crusher bit depth): bits
@@ -66,6 +67,9 @@ pub enum ModDest {
     Cutoff,
     Resonance,
     Drive,
+    Cutoff2,
+    Resonance2,
+    Drive2,
     Pitch,
     CrushBits,
     CrushSteps,
@@ -85,6 +89,9 @@ impl ModDest {
             ModDest::Cutoff => 6.0,
             ModDest::Resonance => 1.0,
             ModDest::Drive => 1.0,
+            ModDest::Cutoff2 => 6.0,
+            ModDest::Resonance2 => 1.0,
+            ModDest::Drive2 => 1.0,
             ModDest::Pitch => 24.0,
             ModDest::CrushBits => crate::crush::MAX_BITS - crate::crush::MIN_BITS,
             // From the top (256) to the bottom (2) is 7 halvings.
@@ -102,10 +109,12 @@ impl ModDest {
             | ModDest::OscMix
             | ModDest::Resonance
             | ModDest::Drive
+            | ModDest::Resonance2
+            | ModDest::Drive2
             | ModDest::CrushMix => {
                 format!("{:+.0}%", value * 100.0)
             }
-            ModDest::Cutoff | ModDest::CrushSteps => format!("{value:+.1} oct"),
+            ModDest::Cutoff | ModDest::Cutoff2 | ModDest::CrushSteps => format!("{value:+.1} oct"),
             ModDest::Pitch | ModDest::Osc2Pitch => format!("{value:+.1} st"),
             ModDest::CrushBits => format!("{value:+.1} bits"),
             ModDest::UnisonDetune => format!("{value:+.0} ct"),
@@ -198,6 +207,15 @@ pub enum SlotDest {
     CrushMix,
     #[id = "drive"]
     Drive,
+    #[id = "cutoff2"]
+    #[name = "Cutoff 2"]
+    Cutoff2,
+    #[id = "res2"]
+    #[name = "Res 2"]
+    Resonance2,
+    #[id = "drive2"]
+    #[name = "Drive 2"]
+    Drive2,
 }
 
 impl SlotDest {
@@ -212,6 +230,9 @@ impl SlotDest {
             ModDest::Cutoff => SlotDest::Cutoff,
             ModDest::Resonance => SlotDest::Resonance,
             ModDest::Drive => SlotDest::Drive,
+            ModDest::Cutoff2 => SlotDest::Cutoff2,
+            ModDest::Resonance2 => SlotDest::Resonance2,
+            ModDest::Drive2 => SlotDest::Drive2,
             ModDest::Pitch => SlotDest::Pitch,
             ModDest::CrushBits => SlotDest::CrushBits,
             ModDest::CrushSteps => SlotDest::CrushSteps,
@@ -240,6 +261,9 @@ impl SlotDest {
             SlotDest::CrushSteps => Some(ModDest::CrushSteps),
             SlotDest::CrushMix => Some(ModDest::CrushMix),
             SlotDest::Drive => Some(ModDest::Drive),
+            SlotDest::Cutoff2 => Some(ModDest::Cutoff2),
+            SlotDest::Resonance2 => Some(ModDest::Resonance2),
+            SlotDest::Drive2 => Some(ModDest::Drive2),
         }
     }
 
@@ -371,6 +395,9 @@ pub struct ModOffsets {
     pub cutoff_oct: f32,
     pub resonance: f32,
     pub drive: f32,
+    pub cutoff2_oct: f32,
+    pub resonance2: f32,
+    pub drive2: f32,
     pub pitch_st: f32,
     pub crush_bits: f32,
     pub crush_steps_oct: f32,
@@ -388,6 +415,9 @@ impl ModOffsets {
             ModDest::Cutoff => self.cutoff_oct += value,
             ModDest::Resonance => self.resonance += value,
             ModDest::Drive => self.drive += value,
+            ModDest::Cutoff2 => self.cutoff2_oct += value,
+            ModDest::Resonance2 => self.resonance2 += value,
+            ModDest::Drive2 => self.drive2 += value,
             ModDest::Pitch => self.pitch_st += value,
             ModDest::CrushBits => self.crush_bits += value,
             ModDest::CrushSteps => self.crush_steps_oct += value,
@@ -566,6 +596,30 @@ mod tests {
         assert_eq!(ModDest::Osc2Pitch.format_amount(-1.0), "-36.0 st");
         assert_eq!(ModDest::OscMix.format_amount(0.25), "+25%");
         assert_eq!(ModDest::UnisonDetune.format_amount(0.5), "+50 ct");
+    }
+
+    #[test]
+    fn filter2_destinations_have_their_own_offsets() {
+        let mut routes = Routes::EMPTY;
+        routes.add(ModSource::Velocity, ModDest::Cutoff2, 2.0);
+        routes.add(ModSource::Velocity, ModDest::Resonance2, 0.5);
+        routes.add(ModSource::Velocity, ModDest::Drive2, -0.25);
+        let off = apply(&routes, &SOURCES);
+        assert_eq!((off.cutoff2_oct, off.resonance2, off.drive2), (2.0, 0.5, -0.25));
+        // Filter 1's are untouched.
+        assert_eq!((off.cutoff_oct, off.resonance, off.drive), (0.0, 0.0, 0.0));
+        assert_eq!(ModDest::Cutoff2.format_amount(0.5), "+3.0 oct");
+        assert_eq!(ModDest::Resonance2.format_amount(-0.5), "-50%");
+    }
+
+    #[test]
+    fn every_slot_destination_round_trips() {
+        for i in 0..SlotDest::variants().len() {
+            let slot = SlotDest::from_index(i);
+            if let Some(dest) = slot.dest() {
+                assert_eq!(SlotDest::of(dest), slot);
+            }
+        }
     }
 
     #[test]

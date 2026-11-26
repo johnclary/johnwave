@@ -95,6 +95,5 @@ folder at `target/bundled` and just rebuild + rescan.
 - show mod adjustments in readout
 - second lfo and second mod env (and/or use amp env as a mod source)
 - ability to type in param values (with right click?)
-- a second filter
 - more mod targets: porta glide speed, amp env (adsr)
 - 2× oversampling around the filter, to cut back on Drive's aliasing turns

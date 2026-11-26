@@ -167,21 +167,69 @@ impl Filter {
     }
 }
 
-/// How much the clean filter (Drive at 0%) lets through at `freq`: 1 is unchanged,
-/// 0.5 is half as loud (about −6 dB), above 1 is boosted (the resonant peak). For drawing
-/// the filter's curve, so the window doesn't have to run the filter to find out.
+/// One filter's settings, for drawing its curve.
+#[derive(Clone, Copy, Debug)]
+pub struct CurveSettings {
+    pub kind: FilterType,
+    pub slope: FilterSlope,
+    pub cutoff_hz: f32,
+    pub resonance: f32,
+}
+
+/// How much the clean filters (Drive at 0%) let through at `freq`: 1 is unchanged,
+/// 0.5 is half as loud (about −6 dB), above 1 is boosted (a resonant peak). For drawing
+/// the curve, so the window doesn't have to run the filters to find out.
 ///
-/// It's worked out from the filter's own formulas: the SVF behaves exactly like a
-/// classic analog filter whose frequencies have been squeezed to fit below the top of the
-/// sample rate, and `w` undoes that squeeze. At `w` = 1 you're at the cutoff.
-pub fn response(
-    kind: FilterType,
-    slope: FilterSlope,
-    cutoff_hz: f32,
-    resonance: f32,
+/// Filter 1 alone, or with Filter 2 (`Some`, with
+/// `true` for parallel). In serial the sound goes through both, so their gains multiply.
+/// In parallel the two outputs are mixed 50/50, and how they add depends on their
+/// timing (phase) as well as their levels: a low-pass and a high-pass at the same
+/// cutoff partly cancel there, leaving a dip. So this works with the full complex
+/// response, not just the levels.
+pub fn combined_response(
+    filter1: CurveSettings,
+    filter2: Option<(CurveSettings, bool)>,
     freq: f32,
     sample_rate: f32,
 ) -> f32 {
+    let h1 = complex_response(filter1, freq, sample_rate);
+    let h = match filter2 {
+        None => h1,
+        Some((settings, parallel)) => {
+            let h2 = complex_response(settings, freq, sample_rate);
+            if parallel {
+                ((h1.0 + h2.0) / 2.0, (h1.1 + h2.1) / 2.0)
+            } else {
+                mul(h1, h2)
+            }
+        }
+    };
+    magnitude(h)
+}
+
+/// A complex number as (real, imaginary). It holds both how loud a frequency comes out
+/// and how far it's delayed (its phase), which is what adding two filters needs.
+type Complex = (f32, f32);
+
+fn mul(a: Complex, b: Complex) -> Complex {
+    (a.0 * b.0 - a.1 * b.1, a.0 * b.1 + a.1 * b.0)
+}
+
+fn div(a: Complex, b: Complex) -> Complex {
+    let d = b.0 * b.0 + b.1 * b.1;
+    ((a.0 * b.0 + a.1 * b.1) / d, (a.1 * b.0 - a.0 * b.1) / d)
+}
+
+fn magnitude(a: Complex) -> f32 {
+    a.0.hypot(a.1)
+}
+
+/// The filter's complex response at `freq`. It's worked out from the filter's own
+/// formulas: the SVF behaves exactly like a classic analog filter whose frequencies have
+/// been squeezed to fit below the top of the sample rate, and `w` undoes that squeeze.
+/// At `w` = 1 you're at the cutoff.
+fn complex_response(settings: CurveSettings, freq: f32, sample_rate: f32) -> Complex {
+    let CurveSettings { kind, slope, cutoff_hz, resonance } = settings;
     // The same limits `process` uses.
     let cutoff = cutoff_hz.clamp(10.0, 0.45 * sample_rate);
     let g = (PI * cutoff / sample_rate).tan();
@@ -191,18 +239,18 @@ pub fn response(
     // bottom line, which is where the peak comes from: it's smallest at the cutoff, and
     // smaller still with less damping.
     let stage = |k: f32| {
-        let bottom = ((1.0 - w * w).powi(2) + (k * w).powi(2)).sqrt();
+        let bottom = (1.0 - w * w, k * w);
         let top = match kind {
-            FilterType::LowPass => 1.0,
-            FilterType::HighPass => w * w,
-            FilterType::BandPass => k * w,
-            FilterType::Notch => (1.0 - w * w).abs(),
+            FilterType::LowPass => (1.0, 0.0),
+            FilterType::HighPass => (-w * w, 0.0),
+            FilterType::BandPass => (0.0, k * w),
+            FilterType::Notch => (1.0 - w * w, 0.0),
         };
-        top / bottom
+        div(top, bottom)
     };
     match slope {
         FilterSlope::Db12 => stage(K_MAX + (K_MIN - K_MAX) * res),
-        FilterSlope::Db24 => stage(K_24_FIRST) * stage(K_24_SECOND + (K_MIN - K_24_SECOND) * res),
+        FilterSlope::Db24 => mul(stage(K_24_FIRST), stage(K_24_SECOND + (K_MIN - K_24_SECOND) * res)),
     }
 }
 
@@ -250,12 +298,42 @@ mod tests {
                 for res in [0.0, 0.7] {
                     for freq in [200.0, 1_000.0, 4_000.0] {
                         let measured = gain_sloped(kind, slope, freq, 1_000.0, res);
-                        let worked_out = response(kind, slope, 1_000.0, res, freq, SR);
+                        let settings = CurveSettings { kind, slope, cutoff_hz: 1_000.0, resonance: res };
+                        let worked_out = combined_response(settings, None, freq, SR);
                         // A notch right on its cutoff is (nearly) silent either way.
                         let close = (measured - worked_out).abs() < 0.02 * worked_out.max(0.05);
                         assert!(close, "{kind:?} {slope:?} res {res} at {freq} Hz: {measured} vs {worked_out}");
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn combined_response_matches_the_real_filters() {
+        // Filter 1 a resonant low-pass at 1 kHz, Filter 2 a high-pass at 1 kHz: run both
+        // ways on sines and compare with the worked-out curve. Parallel at the cutoff is
+        // where the phase matters most.
+        let f1 = CurveSettings { kind: FilterType::LowPass, slope: FilterSlope::Db12, cutoff_hz: 1_000.0, resonance: 0.3 };
+        let f2 = CurveSettings { kind: FilterType::HighPass, slope: FilterSlope::Db24, cutoff_hz: 1_000.0, resonance: 0.0 };
+        for parallel in [false, true] {
+            for freq in [200.0, 1_000.0, 4_000.0] {
+                let (mut a, mut b) = (Filter::default(), Filter::default());
+                let n = SR as usize;
+                let mut peak: f32 = 0.0;
+                for i in 0..n {
+                    let x = (i as f32 * freq / SR * TAU).sin();
+                    let y1 = a.process(x, f1.kind, f1.slope, f1.cutoff_hz, f1.resonance, 0.0, SR);
+                    let input2 = if parallel { x } else { y1 };
+                    let y2 = b.process(input2, f2.kind, f2.slope, f2.cutoff_hz, f2.resonance, 0.0, SR);
+                    let y = if parallel { (y1 + y2) / 2.0 } else { y2 };
+                    if i > n / 2 {
+                        peak = peak.max(y.abs());
+                    }
+                }
+                let worked_out = combined_response(f1, Some((f2, parallel)), freq, SR);
+                let close = (peak - worked_out).abs() < 0.02 * worked_out.max(0.05);
+                assert!(close, "parallel {parallel} at {freq} Hz: {peak} vs {worked_out}");
             }
         }
     }

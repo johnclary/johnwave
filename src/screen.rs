@@ -29,6 +29,9 @@ pub struct ScreenWave {
     /// view's curve.
     pub cutoff_hz: f32,
     pub resonance: f32,
+    /// The same for Filter 2.
+    pub cutoff2_hz: f32,
+    pub resonance2: f32,
 }
 
 impl Default for ScreenWave {
@@ -42,6 +45,8 @@ impl Default for ScreenWave {
             gain2: 0.0,
             cutoff_hz: 20_000.0,
             resonance: 0.0,
+            cutoff2_hz: 20.0,
+            resonance2: 0.0,
         }
     }
 }
@@ -81,6 +86,8 @@ impl ScreenWave {
             // Cutoff by how far it moved in octaves, since it's heard that way.
             || (self.cutoff_hz / other.cutoff_hz).log2().abs() > 0.005
             || (self.resonance - other.resonance).abs() > 0.002
+            || (self.cutoff2_hz / other.cutoff2_hz).log2().abs() > 0.005
+            || (self.resonance2 - other.resonance2).abs() > 0.002
     }
 }
 
@@ -96,6 +103,8 @@ pub struct SharedScreen {
     gain2: AtomicF32,
     cutoff_hz: AtomicF32,
     resonance: AtomicF32,
+    cutoff2_hz: AtomicF32,
+    resonance2: AtomicF32,
     /// The host's sample rate, which the filter curve needs. Kept while silent too.
     sample_rate: AtomicF32,
 }
@@ -112,6 +121,8 @@ impl Default for SharedScreen {
             gain2: AtomicF32::new(w.gain2),
             cutoff_hz: AtomicF32::new(w.cutoff_hz),
             resonance: AtomicF32::new(w.resonance),
+            cutoff2_hz: AtomicF32::new(w.cutoff2_hz),
+            resonance2: AtomicF32::new(w.resonance2),
             sample_rate: AtomicF32::new(48_000.0),
         }
     }
@@ -132,6 +143,8 @@ impl SharedScreen {
         self.gain2.store(w.gain2, Ordering::Relaxed);
         self.cutoff_hz.store(w.cutoff_hz, Ordering::Relaxed);
         self.resonance.store(w.resonance, Ordering::Relaxed);
+        self.cutoff2_hz.store(w.cutoff2_hz, Ordering::Relaxed);
+        self.resonance2.store(w.resonance2, Ordering::Relaxed);
         self.morph.store(w.morph, Ordering::Relaxed);
     }
 
@@ -150,6 +163,8 @@ impl SharedScreen {
             gain2: self.gain2.load(Ordering::Relaxed),
             cutoff_hz: self.cutoff_hz.load(Ordering::Relaxed),
             resonance: self.resonance.load(Ordering::Relaxed),
+            cutoff2_hz: self.cutoff2_hz.load(Ordering::Relaxed),
+            resonance2: self.resonance2.load(Ordering::Relaxed),
         })
     }
 
@@ -298,6 +313,8 @@ mod tests {
             gain2: 0.7,
             cutoff_hz: 800.0,
             resonance: 0.4,
+            cutoff2_hz: 300.0,
+            resonance2: 0.2,
         };
         shared.store(Some(w));
         assert_eq!(shared.load(), Some(w));

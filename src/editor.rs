@@ -5,7 +5,7 @@
 //! no widget tree to keep in sync. The window only reads and sets parameters. No sound
 //! logic lives here.
 
-use crate::filter::{FilterSlope, FilterType};
+use crate::filter::{CurveSettings, FilterSlope, FilterType};
 use crate::knob::Knob;
 use crate::knob::ModTarget;
 use crate::modulation::{mod_offset, mod_span, LiveSources, ModDest, ModSlotParams, ModSource, Routes, SlotDest, SlotSource};
@@ -308,48 +308,85 @@ impl JohnwaveEditor {
                     });
                 });
 
-                panel(ui, "Filter", |ui| {
+                panel(ui, "Filters", |ui| {
+                    // F1 and F2 share the panel: the tabs pick whose controls show.
+                    let tab2 = p.filter_tab.load(Ordering::Relaxed) == FILTER_TAB_2;
+                    let filter2_on = p.filter2_on.value();
+                    // Which tabs have routes (only the armed source's, in mod mode), for
+                    // the tabs' mod dots.
+                    let only = armed.map(|a| a.source);
+                    let routed = |dests: [ModDest; 3]| dests.iter().any(|&d| mod_span(&routes, d, only).is_some());
+                    let marks = [
+                        routed([ModDest::Cutoff, ModDest::Resonance, ModDest::Drive]),
+                        routed([ModDest::Cutoff2, ModDest::Resonance2, ModDest::Drive2]),
+                    ];
+                    // Each tab's knobs and settings. Filter 2's grey out while it's off.
+                    let (cutoff, resonance, drive, kind, slope) = if tab2 {
+                        (&p.cutoff2, &p.resonance2, &p.filter2_drive, &p.filter2_type, &p.filter2_slope)
+                    } else {
+                        (&p.cutoff, &p.resonance, &p.filter_drive, &p.filter_type, &p.filter_slope)
+                    };
+                    let dests = if tab2 {
+                        [ModDest::Cutoff2, ModDest::Resonance2, ModDest::Drive2]
+                    } else {
+                        [ModDest::Cutoff, ModDest::Resonance, ModDest::Drive]
+                    };
+                    let off = tab2 && !filter2_on;
                     knob_row(ui, |ui| {
                         // Cutoff routes are in octaves: each one doubles (or halves) the Hz.
-                        ui.add(Knob::new(&p.cutoff, &setter, "Cutoff").mod_target(mod_target(armed, &p.mod_slots,
+                        ui.add(Knob::new(cutoff, &setter, "Cutoff").mod_target(mod_target(armed, &p.mod_slots,
                             &routes,
-                            ModDest::Cutoff,
+                            dests[0],
                             |offset| {
-                                let hz = p.cutoff.modulated_plain_value() * offset.exp2();
-                                p.cutoff.preview_normalized(hz)
+                                let hz = cutoff.modulated_plain_value() * offset.exp2();
+                                cutoff.preview_normalized(hz)
                             },
-                        )));
-                        ui.add(Knob::new(&p.resonance, &setter, "Res").mod_target(mod_target(armed, &p.mod_slots,
+                        )).off(off));
+                        ui.add(Knob::new(resonance, &setter, "Res").mod_target(mod_target(armed, &p.mod_slots,
                             &routes,
-                            ModDest::Resonance,
-                            |offset| p.resonance.modulated_normalized_value() + offset,
-                        )));
-                        ui.add(Knob::new(&p.filter_drive, &setter, "Drive").mod_target(mod_target(armed, &p.mod_slots,
+                            dests[1],
+                            |offset| resonance.modulated_normalized_value() + offset,
+                        )).off(off));
+                        ui.add(Knob::new(drive, &setter, "Drive").mod_target(mod_target(armed, &p.mod_slots,
                             &routes,
-                            ModDest::Drive,
-                            |offset| p.filter_drive.modulated_normalized_value() + offset,
-                        )));
+                            dests[2],
+                            |offset| drive.modulated_normalized_value() + offset,
+                        )).off(off));
+                        // The tabs end the row, up at the top of the knobs, with Filter 2's
+                        // ON switch under them.
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(ui.available_width(), KNOB_WAVE_SIZE),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                ui.spacing_mut().item_spacing.y = 4.0;
+                                ui.horizontal(|ui| filter_tabs(ui, &p.filter_tab, marks, filter2_on));
+                                if tab2 {
+                                    toggle_button(ui, "ON", &p.filter2_on, &setter);
+                                }
+                            },
+                        );
                     });
-                    // The type and slope sit under the knobs.
+                    // The type and slope sit under the knobs, then (on F2) PAR: off runs
+                    // Filter 1 into Filter 2, on runs them side by side.
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        switch(
-                            ui,
-                            &p.filter_type,
-                            &setter,
-                            &[
-                                (FilterType::LowPass, "LP"),
-                                (FilterType::HighPass, "HP"),
-                                (FilterType::BandPass, "BP"),
-                                (FilterType::Notch, "NOTCH"),
-                            ],
-                        );
-                        switch(
-                            ui,
-                            &p.filter_slope,
-                            &setter,
-                            &[(FilterSlope::Db12, "12"), (FilterSlope::Db24, "24")],
-                        );
+                        ui.add_enabled_ui(!off, |ui| {
+                            switch(
+                                ui,
+                                kind,
+                                &setter,
+                                &[
+                                    (FilterType::LowPass, "LP"),
+                                    (FilterType::HighPass, "HP"),
+                                    (FilterType::BandPass, "BP"),
+                                    (FilterType::Notch, "NOTCH"),
+                                ],
+                            );
+                            switch(ui, slope, &setter, &[(FilterSlope::Db12, "12"), (FilterSlope::Db24, "24")]);
+                            if tab2 {
+                                toggle_button(ui, "PAR", &p.filter_parallel, &setter);
+                            }
+                        });
                     });
                 });
             });
@@ -371,7 +408,7 @@ impl JohnwaveEditor {
                     sub_label(ui, "Source Select");
                     mod_chips(ui, &p.mod_slots);
 
-                    sub_label(ui, "Mod Env");
+                    sub_label(ui, "Mod Envelope");
                     knob_row(ui, |ui| {
                         ui.add(Knob::new(&p.mod_env_attack, &setter, "A"));
                         ui.add(Knob::new(&p.mod_env_decay, &setter, "D"));
@@ -713,8 +750,9 @@ fn wave_view(
 
 /// The FREQ view: low notes on the left, high on the right (20 Hz to 20 kHz, each
 /// octave the same width, the way pitch is heard), loudness up the side in decibels.
-/// It shows the filter's curve: what it lets through at each frequency. While a note
-/// plays the curve follows that note's cutoff and resonance, mod routes and all;
+/// It shows the filter's curve: what it lets through at each frequency (both filters
+/// together while Filter 2 is on). While a note plays the curve follows that note's
+/// cutoffs and resonances, mod routes and all;
 /// otherwise it shows the knobs. Behind it, the live spectrum of the real output.
 fn freq_view(
     painter: &egui::Painter,
@@ -775,14 +813,29 @@ fn freq_view(
     }
 
     if p.screen_filter.load(Ordering::Relaxed) {
-        let (cutoff, resonance) = match wave {
-            Some(w) => (w.cutoff_hz, w.resonance),
-            None => (p.cutoff.value(), p.resonance.value()),
+        // Both filters together while Filter 2 is on.
+        let (cutoff, resonance, cutoff2, resonance2) = match wave {
+            Some(w) => (w.cutoff_hz, w.resonance, w.cutoff2_hz, w.resonance2),
+            None => (p.cutoff.value(), p.resonance.value(), p.cutoff2.value(), p.resonance2.value()),
         };
-        let (kind, slope) = (p.filter_type.value(), p.filter_slope.value());
+        let filter1 = CurveSettings {
+            kind: p.filter_type.value(),
+            slope: p.filter_slope.value(),
+            cutoff_hz: cutoff,
+            resonance,
+        };
+        let filter2 = p.filter2_on.value().then(|| {
+            let settings = CurveSettings {
+                kind: p.filter2_type.value(),
+                slope: p.filter2_slope.value(),
+                cutoff_hz: cutoff2,
+                resonance: resonance2,
+            };
+            (settings, p.filter_parallel.value())
+        });
         let curve = |x: f32| {
             let hz = FREQ_LOW * (FREQ_HIGH / FREQ_LOW).powf(x);
-            let gain = crate::filter::response(kind, slope, cutoff, resonance, hz, sample_rate);
+            let gain = crate::filter::combined_response(filter1, filter2, hz, sample_rate);
             // 20·log10 turns a gain into decibels. The tiny floor keeps a notch's
             // silent middle from being minus infinity.
             v_of_db(20.0 * gain.max(1e-6).log10())
@@ -868,6 +921,48 @@ fn view_switch(ui: &mut egui::Ui, setting: &AtomicU8, choices: &[(u8, &str)]) {
                 }
             }
         });
+    });
+}
+
+/// Which tab the Filter panel shows (`SynthParams::filter_tab`).
+pub const FILTER_TAB_1: u8 = 0;
+pub const FILTER_TAB_2: u8 = 1;
+
+/// How far the tab's mod dot sits in from the chip's top-right corner, and its size.
+const TAB_DOT_INSET: f32 = 3.0;
+const TAB_DOT_RADIUS: f32 = 1.75;
+
+/// The Filter panel's `F1  F2` tabs, in the screen chips' style. They're window state,
+/// not sound. Unlike the screen's chips they stay live in mod mode, so Filter 2's knobs
+/// can be made targets too. `marks` says which tabs have routes: a hidden tab with routes
+/// gets a mod dot, so nothing routed is out of sight. F2's label dims while Filter 2 is
+/// off.
+fn filter_tabs(ui: &mut egui::Ui, setting: &AtomicU8, marks: [bool; 2], filter2_on: bool) {
+    let current = setting.load(Ordering::Relaxed);
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.spacing_mut().button_padding = egui::vec2(4.0, 0.0);
+        accent_selection(ui);
+        for (tab, label, name) in [(FILTER_TAB_1, "F1", "Filter 1"), (FILTER_TAB_2, "F2", "Filter 2")] {
+            let on = current == tab;
+            let mut text = egui::RichText::new(label).size(SCREEN_CHIP_TEXT);
+            if tab == FILTER_TAB_2 && !filter2_on && !on {
+                text = text.color(MUTED_TEXT);
+            }
+            let response = ui.add(egui::Button::selectable(on, text));
+            if !on {
+                chip_outline(ui, &response, None);
+                if marks[tab as usize] {
+                    let dot = response.rect.right_top() + egui::vec2(-TAB_DOT_INSET, TAB_DOT_INSET);
+                    ui.painter().circle_filled(dot, TAB_DOT_RADIUS, MOD_COLOR);
+                }
+            }
+            if response.clicked() {
+                setting.store(tab, Ordering::Relaxed);
+            }
+            let state = if tab == FILTER_TAB_2 && !filter2_on { "Off" } else { "Show its controls" };
+            crate::readout::report_text(ui, name, state.to_string(), &response);
+        }
     });
 }
 
