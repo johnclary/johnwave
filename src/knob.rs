@@ -11,13 +11,14 @@
 //!
 //! In mod mode (a source armed in the header), a knob that's a mod destination edits
 //! that source's route instead: dragging sets the amount (adding a route in a free
-//! matrix slot if there isn't one) and double-click removes it. Knobs that can't be
-//! modulated dim and ignore the mouse until mod mode ends.
+//! matrix slot if there isn't one). To remove it, click the knob's name (it reads
+//! "Remove" while the mouse is on the knob), then click again to confirm. Knobs that
+//! can't be modulated dim and ignore the mouse until mod mode ends.
 //!
 //! It only reads and sets parameters: its own, and in mod mode the matrix slots.
 
 use crate::modulation::{ModSlotParams, ModSource, SlotDest, SlotSource};
-use crate::editor::{ARC_OFF, ARC_RESTING, MOD_ARC_OFF_TARGET, MOD_OUTLINE};
+use crate::editor::{ARC_OFF, ARC_RESTING, MOD_ARC_OFF_TARGET, MOD_OUTLINE, SELECTED_FILL};
 use nice_plug::prelude::{Param, ParamSetter};
 
 /// Everything about how the knob looks, in one place so it's easy to tweak.
@@ -44,6 +45,8 @@ pub struct KnobStyle {
     pub mod_arc_width: f32,
     /// Space between the value arc and the mod arc's ring.
     pub mod_ring_gap: f32,
+    /// Radius of the mod dot in the middle of a knob that's a mod target.
+    pub mod_dot_radius: f32,
     /// Thickness of the live tick: the short mod-colour line marking where the armed
     /// source is pushing the knob right now.
     pub tick_width: f32,
@@ -62,6 +65,7 @@ impl Default for KnobStyle {
             mod_color: crate::editor::MOD_COLOR,
             mod_arc_width: 2.5,
             mod_ring_gap: 1.0,
+            mod_dot_radius: 2.5,
             tick_width: 2.0,
         }
     }
@@ -103,6 +107,8 @@ const LABEL_GAP: f32 = 5.25;
 /// How far the mod ring may poke past the knob's square, in points. A little overhang
 /// lets the value arc stay near its old size without making the knob bigger.
 const RING_OVERHANG: f32 = 1.0;
+/// How long the remove button waits at "Sure?" for the second click, in seconds.
+const CONFIRM_TIME: f64 = 2.0;
 /// Room between a mod target's name and its outline in mod mode (x, y).
 const LABEL_OUTLINE_PAD: egui::Vec2 = egui::vec2(4.0, 1.0);
 
@@ -243,12 +249,20 @@ impl<'a, P: Param> Knob<'a, P> {
         response: &mut egui::Response,
         source: ModSource,
         target: &ModTarget,
-    ) {
+    ) -> LabelMode {
         let slot_source = SlotSource::of(source);
         let slots = target.slots;
         let routed = |i: &usize| slots[*i].source.value() == slot_source && slots[*i].dest.value() == target.dest;
         let existing = (0..slots.len()).find(routed);
-        let free = || (0..slots.len()).find(|&i| slots[i].source.value() == SlotSource::Off || slots[i].dest.value() == SlotDest::Off);
+        // A slot is free if it's switched off, or its amount was dragged back to zero
+        // (it does nothing, and there's no remove button for it since it shows no arc).
+        let free = || {
+            (0..slots.len()).find(|&i| {
+                slots[i].source.value() == SlotSource::Off
+                    || slots[i].dest.value() == SlotDest::Off
+                    || slots[i].amount.value() == 0.0
+            })
+        };
 
         // Like the value drag: our own copy of (slot, amount) while dragging.
         let drag_id = response.id.with("mod_paint");
@@ -288,25 +302,73 @@ impl<'a, P: Param> Knob<'a, P> {
             ui.data_mut(|d| d.remove::<(usize, f32)>(drag_id));
         }
 
-        if response.double_clicked() {
-            for i in (0..slots.len()).filter(routed) {
-                set_once(self.setter, &slots[i].source, SlotSource::Off);
-                set_once(self.setter, &slots[i].dest, SlotDest::Off);
-                set_once(self.setter, &slots[i].amount, 0.0);
+        // Removing takes two clicks on the name, so a stray click mid-performance can't
+        // lose a route. While the mouse is on a knob this source reaches, its name reads
+        // "Remove". Clicking that lights it up as "Sure?", and clicking again removes the
+        // route. Moving off the knob, dragging it, or waiting `CONFIRM_TIME` cancels.
+        let removable = existing.is_some() && target.span.is_some();
+        let confirm_id = response.id.with("remove_confirm");
+        let now = ui.input(|i| i.time);
+        let confirm_since = ui
+            .data(|d| d.get_temp::<(ModSource, f64)>(confirm_id))
+            .filter(|&(s, since)| s == source && now - since < CONFIRM_TIME)
+            .map(|(_, since)| since);
+        let on_label = removable
+            && response.hover_pos().is_some_and(|p| label_row(&self.style, response.rect).contains(p));
+        let mut mode = LabelMode::Name;
+        if removable && response.hovered() && !response.dragged() {
+            mode = if confirm_since.is_some() { LabelMode::Confirm } else { LabelMode::Remove };
+            if on_label {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
-            response.mark_changed();
+        }
+        if response.clicked() && on_label {
+            if confirm_since.is_some() {
+                for i in (0..slots.len()).filter(routed) {
+                    set_once(self.setter, &slots[i].source, SlotSource::Off);
+                    set_once(self.setter, &slots[i].dest, SlotDest::Off);
+                    set_once(self.setter, &slots[i].amount, 0.0);
+                }
+                ui.data_mut(|d| d.remove::<(ModSource, f64)>(confirm_id));
+                response.mark_changed();
+                mode = LabelMode::Name;
+            } else {
+                ui.data_mut(|d| d.insert_temp(confirm_id, (source, now)));
+                ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(CONFIRM_TIME));
+                mode = LabelMode::Confirm;
+            }
+        } else if confirm_since.is_some() && (!response.hovered() || response.dragged() || response.clicked()) {
+            ui.data_mut(|d| d.remove::<(ModSource, f64)>(confirm_id));
+            mode = LabelMode::Name;
+        } else if let Some(since) = confirm_since {
+            // Draw a frame when the time runs out, so "Sure?" goes away by itself.
+            let left = (CONFIRM_TIME - (now - since)).max(0.0);
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(left));
         }
 
-        // The readout names the route, like "LFO → Cutoff  +2.0 oct".
+        // The readout names the route, like "LFO > Cutoff  +2.0 oct".
         let amount = drag.map(|(_, a)| a).or_else(|| existing.map(|i| slots[i].amount.value()));
         let value = match amount {
             Some(a) => target.dest.format_amount(a),
             None if free().is_none() => "Matrix full".into(),
             None => "drag to add".into(),
         };
-        let name = format!("{} → {}", slot_source.name(), target.dest.name());
+        let value = if mode == LabelMode::Confirm { "Click again to remove".into() } else { value };
+        let name = format!("{} > {}", slot_source.name(), target.dest.name());
         crate::readout::report_text(ui, &name, value, response);
+        mode
     }
+}
+
+/// What a knob's name shows. Only mod mode's remove button changes it.
+#[derive(Clone, Copy, PartialEq)]
+enum LabelMode {
+    /// The knob's own name.
+    Name,
+    /// "Remove": the mouse is on a knob the armed source reaches.
+    Remove,
+    /// "Sure?": clicked once; click again to remove the route.
+    Confirm,
 }
 
 /// Change a parameter in one go, as one undo step.
@@ -350,18 +412,20 @@ impl<P: Param> egui::Widget for Knob<'_, P> {
 
         // --- Mouse ---
 
-        match (armed, &self.mod_target) {
-            (None, _) if !inert => self.value_input(ui, &mut response),
-            (None, _) => {}
+        let label_mode = match (armed, &self.mod_target) {
+            (None, _) if !inert => {
+                self.value_input(ui, &mut response);
+                LabelMode::Name
+            }
             (Some(source), Some(target)) => self.paint_route(ui, &mut response, source, target),
-            (Some(_), None) => {}
-        }
+            _ => LabelMode::Name,
+        };
 
         // --- Drawing ---
 
         if ui.is_rect_visible(rect) {
             let painter = ui.painter_at(rect.expand(16.0)); // room for the glow
-            let center = egui::pos2(rect.center().x, rect.top() + style.diameter / 2.0);
+            let center = knob_center(style, rect);
             let radius = style.radius();
             let value = self.param.modulated_normalized_value();
 
@@ -429,6 +493,10 @@ impl<P: Param> egui::Widget for Knob<'_, P> {
                     egui::Stroke::new(style.mod_arc_width, mod_color),
                 ));
 
+                // The mod dot: a mod-colour dot in the middle, so a targeted knob is easy to
+                // spot even when its amount (and so its mod arc) is tiny.
+                painter.circle_filled(center, style.mod_dot_radius, mod_color);
+
                 // The live tick: where the armed source has the knob right now. A short
                 // mod-colour line across the value arc that pokes inward only, so it never
                 // cuts across the mod ring outside.
@@ -448,25 +516,48 @@ impl<P: Param> egui::Widget for Knob<'_, P> {
             let visuals = ui.visuals();
             // The name underneath. (The value shows in the readout box instead.) In mod
             // mode a target's name turns the mod colour, so the targets stand out across the window.
-            let label_color = if armed.is_some() && !inert && ui.is_enabled() {
-                mod_color
-            } else if !enabled {
-                visuals.weak_text_color()
-            } else {
-                visuals.text_color()
+            // The remove button (see `paint_route`) swaps the name for "Remove", then for
+            // a lit "Sure?" chip in dark text.
+            let (label_text, label_color) = match label_mode {
+                LabelMode::Confirm => ("Sure?", crate::editor::BACKGROUND),
+                LabelMode::Remove => ("Remove", style.mod_color),
+                LabelMode::Name if armed.is_some() && !inert && ui.is_enabled() => (self.label, mod_color),
+                LabelMode::Name if !enabled => (self.label, visuals.weak_text_color()),
+                LabelMode::Name => (self.label, visuals.text_color()),
             };
-            let label_rect = painter.text(
-                egui::pos2(center.x, center.y + style.arc_bottom() + LABEL_GAP),
-                egui::Align2::CENTER_TOP,
-                self.label,
+            let galley = painter.layout_no_wrap(
+                label_text.to_string(),
                 egui::FontId::proportional(style.label_text_size),
                 label_color,
             );
+            let label_pos = egui::pos2(center.x, center.y + style.arc_bottom() + LABEL_GAP);
+            let label_rect = egui::Align2::CENTER_TOP.anchor_size(label_pos, galley.size());
+            // The chip round the name: at least as wide as "Remove", so every mod mode
+            // target's chip lines up, and it doesn't jump between the name, "Remove" and
+            // "Sure?".
+            let remove_width = painter
+                .layout_no_wrap("Remove".into(), egui::FontId::proportional(style.label_text_size), label_color)
+                .size()
+                .x;
+            let chip = egui::Align2::CENTER_TOP
+                .anchor_size(label_pos, egui::vec2(galley.size().x.max(remove_width), galley.size().y))
+                .expand2(LABEL_OUTLINE_PAD);
+            match label_mode {
+                LabelMode::Confirm => {
+                    painter.rect_filled(chip, 3.0, style.mod_color);
+                }
+                // A faint fill while the mouse is right on it, like the chips in the header.
+                LabelMode::Remove if response.hover_pos().is_some_and(|p| label_row(style, rect).contains(p)) => {
+                    painter.rect_filled(chip, 3.0, style.mod_color.gamma_multiply(SELECTED_FILL));
+                }
+                _ => {}
+            }
+            painter.galley(label_rect.min, galley, label_color);
             // In mod mode, every target gets a thin mod-colour outline round its name, like an
             // unpressed chip, so you can see at a glance where the armed source can go.
-            if armed.is_some() && !inert && ui.is_enabled() {
+            if armed.is_some() && !inert && ui.is_enabled() && label_mode != LabelMode::Confirm {
                 painter.rect_stroke(
-                    label_rect.expand2(LABEL_OUTLINE_PAD),
+                    chip,
                     3.0,
                     egui::Stroke::new(1.0, mod_color.gamma_multiply(MOD_OUTLINE)),
                     egui::StrokeKind::Outside,
@@ -477,6 +568,18 @@ impl<P: Param> egui::Widget for Knob<'_, P> {
         crate::readout::report(ui, self.param, &response);
         response
     }
+}
+
+/// The middle of the knob's circle, for a knob drawn in `rect`.
+fn knob_center(style: &KnobStyle, rect: egui::Rect) -> egui::Pos2 {
+    egui::pos2(rect.center().x, rect.top() + style.diameter / 2.0)
+}
+
+/// The strip at the bottom of a knob drawn in `rect` where its name sits: what mod
+/// mode's remove button listens to.
+fn label_row(style: &KnobStyle, rect: egui::Rect) -> egui::Rect {
+    let top = knob_center(style, rect).y + style.arc_bottom() + LABEL_GAP - LABEL_OUTLINE_PAD.y;
+    egui::Rect::from_min_max(egui::pos2(rect.left(), top), rect.max)
 }
 
 /// Points along the arc between two positions, each 0..1 of the way round the sweep

@@ -77,6 +77,8 @@ pub const SELECTED_FILL: f32 = 0.25;
 pub const MOD_SELECTED_FILL: f32 = 0.3;
 /// A mod source chip that's routed somewhere but not armed.
 pub const MOD_ROUTED: f32 = 0.75;
+/// The name in the readout box, dimmer than its value so the value leads.
+pub const READOUT_NAME: f32 = 0.6;
 
 /// Hand the palette's base colours to egui, so its own text and buttons use them.
 fn apply_palette(ctx: &egui::Context, frame: &mut Frame) {
@@ -576,7 +578,7 @@ fn mod_chips(ui: &mut egui::Ui, slots: &[ModSlotParams]) {
                 set_armed(ui, if on { None } else { Some(source) });
             }
             let name = SlotSource::of(source).name();
-            let hint = if on { "Set a mod target · Double-click target to reset".to_string() } else { "Select modulation source".to_string() };
+            let hint = if on { "Drag a target knob".to_string() } else { "Select modulation source".to_string() };
             crate::readout::report_text(ui, &format!("{name} mod"), hint, &response);
         }
     });

@@ -108,6 +108,11 @@ pub fn report_text(ui: &egui::Ui, name: &str, value: String, response: &egui::Re
 
 /// Space between the box's edges and its text.
 const PADDING: f32 = 10.0;
+/// Text sizes of the name and the value.
+const NAME_SIZE: f32 = 11.0;
+const VALUE_SIZE: f32 = 18.0;
+/// The least space kept between the name and the value.
+const NAME_VALUE_GAP: f32 = 12.0;
 
 /// Draw the box into `rect` (space the window set aside for it). Call this after every
 /// control has been drawn this frame, so it shows what they reported.
@@ -121,7 +126,6 @@ pub fn draw(ui: &egui::Ui, rect: egui::Rect) {
 
     let entry = ui.data(|d| d.get_temp::<Entry>(note_id()));
     let painter = ui.painter_at(rect);
-    let visuals = ui.visuals();
 
     crate::editor::screen_frame(
         &painter,
@@ -133,21 +137,34 @@ pub fn draw(ui: &egui::Ui, rect: egui::Rect) {
         Some(e) => (e.name.to_uppercase(), e.value.as_str()),
         None => (String::new(), "—"),
     };
-    // One line: the name small and faint on the left, the value big on the right.
-    painter.text(
+    // One line: the name small on the left, the value big on the right. Both monospaced
+    // and in the accent, so they read as one display, with the name dimmer so the value leads.
+    let name_rect = painter.text(
         egui::pos2(rect.left() + PADDING, rect.center().y),
         egui::Align2::LEFT_CENTER,
         name,
-        egui::FontId::proportional(11.0),
-        visuals.weak_text_color(),
+        egui::FontId::monospace(NAME_SIZE),
+        crate::editor::accent().gamma_multiply(crate::editor::READOUT_NAME),
     );
     // Monospaced, so the digits don't shuffle sideways while you drag. The accent, like the
-    // knob arcs.
+    // knob arcs. If the value is too long to fit beside the name, it's drawn smaller
+    // (never smaller than the name) so the two don't overlap. Monospaced text gets wider
+    // in step with its size, so one measurement says how much to shrink.
+    let room = rect.right() - PADDING - (name_rect.right() + NAME_VALUE_GAP);
+    let full_width = painter
+        .layout_no_wrap(value.to_string(), egui::FontId::monospace(VALUE_SIZE), egui::Color32::WHITE)
+        .size()
+        .x;
+    let size = if full_width > room {
+        (VALUE_SIZE * room / full_width).max(NAME_SIZE)
+    } else {
+        VALUE_SIZE
+    };
     painter.text(
         egui::pos2(rect.right() - PADDING, rect.center().y),
         egui::Align2::RIGHT_CENTER,
         value,
-        egui::FontId::monospace(18.0),
+        egui::FontId::monospace(size),
         crate::editor::accent(),
     );
 }
