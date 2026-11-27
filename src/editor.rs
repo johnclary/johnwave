@@ -11,7 +11,7 @@ use crate::knob::ModTarget;
 use crate::modulation::{mod_offset, mod_span, LiveSources, ModDest, ModSlotParams, ModSource, Routes, SlotDest, SlotSource};
 use crate::screen::{OutputCapture, ScreenWave, SharedScreen};
 use crate::spectrum::{Spectrum, FFT_SIZE};
-use crate::trail::{Phosphor, Trail};
+use crate::trail::{Depth, Phosphor, Trail};
 use crate::{SynthParams, VoiceMode};
 use nice_plug::context::gui::GuiContext;
 use nice_plug::editor::dpi::LogicalSize;
@@ -120,6 +120,8 @@ pub struct JohnwaveEditor {
     phosphor: Phosphor,
     /// The FREQ view's live spectrum of the output.
     spectrum: Spectrum,
+    /// The WAVE view's DEPTH rows, rolling in from the horizon.
+    depth: Depth,
 }
 
 impl JohnwaveEditor {
@@ -140,6 +142,7 @@ impl JohnwaveEditor {
             trail: Trail::default(),
             phosphor: Phosphor::default(),
             spectrum: Spectrum::default(),
+            depth: Depth::default(),
         }
     }
 }
@@ -184,7 +187,14 @@ impl NiceEguiApp for JohnwaveEditor {
         let spectrum = freq && playing && self.params.screen_spectrum.load(Ordering::Relaxed);
         let latest = spectrum.then(|| self.capture.latest(FFT_SIZE)).flatten();
         self.spectrum.update(now, latest.as_deref(), self.display.sample_rate(), FREQ_LOW, FREQ_HIGH);
-        if self.trail.is_fading() {
+        // The DEPTH rows, only while WAVE shows them. They take the OUT line as it's
+        // drawn, glow and all.
+        if !freq && self.params.screen_depth.load(Ordering::Relaxed) {
+            self.depth.update(now, self.display.load(), self.phosphor.line());
+        } else {
+            self.depth.clear();
+        }
+        if self.trail.is_fading() || self.depth.is_active() {
             self.repaint.request_repaint();
         }
 
@@ -447,7 +457,12 @@ impl JohnwaveEditor {
                 let title_height = panel_title(ui, "Scope").size().y;
                 let height = SCOPE_HEIGHT - title_height - SCOPE_BEZEL;
                 panel_with(ui, "Scope", SCOPE_BEZEL, SCOPE_BEZEL, 0.0, |ui| {
-                    let lines = ScreenLines { phosphor: &self.phosphor, trail: &self.trail, spectrum: &self.spectrum };
+                    let lines = ScreenLines {
+                        phosphor: &self.phosphor,
+                        trail: &self.trail,
+                        spectrum: &self.spectrum,
+                        depth: &self.depth,
+                    };
                     osc_display(ui, p, self.display.load(), lines, self.display.sample_rate(), height);
                     ui.add_space(SCOPE_BEZEL);
                     view_switch(ui, &p.screen_view, &[(SCREEN_VIEW_WAVE, "WAVE"), (SCREEN_VIEW_FREQ, "FREQ")]);
@@ -664,7 +679,7 @@ fn osc_display(
     if p.screen_view.load(Ordering::Relaxed) == SCREEN_VIEW_FREQ {
         freq_view(&painter, view, p, wave, lines.spectrum, sample_rate);
     } else {
-        wave_view(ui, &painter, view, p, wave, lines.phosphor, lines.trail);
+        wave_view(ui, &painter, view, p, wave, lines);
     }
 }
 
@@ -674,22 +689,54 @@ struct ScreenLines<'a> {
     phosphor: &'a Phosphor,
     trail: &'a Trail,
     spectrum: &'a Spectrum,
+    depth: &'a Depth,
 }
 
 /// The WAVE view: two cycles of Osc 1 across, with each line the chips switch on.
-#[allow(clippy::too_many_arguments)]
 fn wave_view(
     ui: &egui::Ui,
     painter: &egui::Painter,
-    waves: egui::Rect,
+    view: egui::Rect,
     p: &SynthParams,
     wave: Option<ScreenWave>,
-    phosphor: &Phosphor,
-    trail: &Trail,
+    lines: ScreenLines,
 ) {
+    let ScreenLines { phosphor, trail, depth, .. } = lines;
     let show = |flag: &AtomicBool| flag.load(Ordering::Relaxed);
-    let (show1, show2, show_mix) = (show(&p.screen_osc1), show(&p.screen_osc2), show(&p.screen_mix));
+    let show_osc = show(&p.screen_mix);
     let show_out = show(&p.screen_out);
+    let show_depth = show(&p.screen_depth);
+    let now = ui.input(|i| i.time);
+
+    // With DEPTH on, the live wave moves down to the front and the last moment of
+    // waves stretches back behind it to the horizon.
+    let waves = if show_depth { depth_rect(view, 0.0) } else { view };
+    if show_depth {
+        let horizon = view.top() + view.height() * DEPTH_HORIZON;
+        painter.line_segment(
+            [egui::pos2(view.left(), horizon), egui::pos2(view.right(), horizon)],
+            egui::Stroke::new(1.0, GRID),
+        );
+        // Furthest back first, so nearer rows draw over them. Each one fades and thins
+        // as it goes back (squared, so the far ones are just a hint).
+        for (row, z) in depth.rows(now) {
+            let rect = depth_rect(view, z);
+            let w = row.wave;
+            let near = 1.0 - z;
+            let color = neon_color(w.morph).gamma_multiply(DEPTH_STRENGTH * near * near);
+            let thickness = 0.75 + 0.75 * near;
+            // OSC and OUT each trail when they're on, in their own colours.
+            if show_osc {
+                screen_line(painter, rect, |x| w.mix(x), color, thickness);
+            }
+            if let (true, Some(out)) = (show_out, &row.out) {
+                let last = (out.len() - 1) as f32;
+                let curve = |x: f32| out[(x * last).round() as usize].clamp(-1.0, 1.0);
+                let out_color = OUT_COLOR.gamma_multiply(DEPTH_STRENGTH * near * near);
+                neon_line(painter, rect, curve, out_color, thickness);
+            }
+        }
+    }
 
     // A faint centre line at 0.
     painter.line_segment(
@@ -699,9 +746,8 @@ fn wave_view(
 
     // The trail first, so the main wave draws on top. Each ghost is just the mix, in
     // its own colour, and gets fainter as it ages (squared, so it fades quickly at
-    // first, then lingers).
-    if show_mix {
-        let now = ui.input(|i| i.time);
+    // first, then lingers). DEPTH already shows the past, so it leaves the trail out.
+    if show_osc && !show_depth {
         for (ghost, fade) in trail.ghosts(now) {
             let w = ghost.wave;
             let color = neon_color(w.morph).gamma_multiply(TRAIL_STRENGTH * fade * fade);
@@ -714,30 +760,16 @@ fn wave_view(
     let Some(w) = wave else {
         return;
     };
-    // Everything in Osc 1's colour: thickness and brightness tell the lines apart.
+    // In Osc 1's colour, drifting with its Shape.
     let color = neon_color(w.morph);
-    // Each oscillator at its share of the mix and the voice's level. Behind the mix they're
-    // thin and faint. On their own they're drawn brighter, so they're easy to follow.
-    let (part_color, part_width) = if show_mix {
-        (color.gamma_multiply(COMPONENT_STRENGTH), 1.0)
-    } else {
-        (color, 1.5)
-    };
-    // Without Osc 2, Osc 1 alone *is* the mix, so it's only drawn when the mix isn't.
-    if show1 && (w.has_osc2() || !show_mix) {
-        screen_line(painter, waves, |x| w.osc1(x) * w.gain1 * w.level, part_color, part_width);
-    }
-    if show2 && w.has_osc2() {
-        screen_line(painter, waves, |x| w.osc2(x) * w.gain2 * w.level, part_color, part_width);
-    }
-    // Then the two added up, bold on top. Scaled by the level, so it swells on attack
-    // and shrinks away on release.
-    if show_mix {
+    // OSC: the two oscillators added up, before Crush and the filter, as a bold line.
+    // Scaled by the level, so it swells on attack and shrinks away on release.
+    if show_osc {
         screen_line(painter, waves, |x| w.mix(x), color, 2.0);
     }
     // Last and on top, the real output: what the voices actually played, after Crush,
     // the filter, unison and any other notes, lined up with Osc 1's cycles. Without any
-    // of those it lands right on the MIX line. A thin soft white with a light glow, like
+    // of those it lands right on the OSC line. A thin soft white with a light glow, like
     // a real scope trace next to the drawn neon waves.
     if show_out {
         if let Some(out) = phosphor.line() {
@@ -747,6 +779,38 @@ fn wave_view(
         }
     }
 }
+
+/// Where a DEPTH row `z` back (0 = front, 1 = horizon) is drawn in the WAVE view.
+/// Further back is shorter and higher, shrinking quickly at first then more slowly, the
+/// way things do going away from you. It also stretches out sideways as it goes, like
+/// the wake behind a boat spreading out and flattening. The screen cuts off what spills
+/// past its sides.
+fn depth_rect(view: egui::Rect, z: f32) -> egui::Rect {
+    // 1 at the front, 0 at the horizon, with perspective.
+    let k = DEPTH_PERSPECTIVE;
+    let near = (1.0 / (1.0 + k * z) - 1.0 / (1.0 + k)) / (1.0 - 1.0 / (1.0 + k));
+    let scale = DEPTH_FAR_SCALE + (1.0 - DEPTH_FAR_SCALE) * near;
+    let front_height = view.height() * DEPTH_FRONT;
+    let front_y = view.bottom() - front_height / 2.0;
+    let horizon_y = view.top() + view.height() * DEPTH_HORIZON;
+    let center = egui::pos2(view.center().x, horizon_y + (front_y - horizon_y) * near);
+    let width = view.width() * (1.0 + DEPTH_STRETCH * z);
+    egui::Rect::from_center_size(center, egui::vec2(width, front_height * scale))
+}
+
+/// How much of the WAVE view's height the front wave takes with DEPTH on, at the bottom. 
+const DEPTH_FRONT: f32 = 0.9;
+/// Where the horizon is, down from the top of the WAVE view.
+const DEPTH_HORIZON: f32 = 0.1;
+/// How big a row is when it reaches the horizon, compared with the front one.
+const DEPTH_FAR_SCALE: f32 = 0.2;
+/// How much wider a row is by the time it reaches the horizon: 1.5 means 2.5 times as
+/// wide as the front one, so its waves are 2.5 times as long.
+const DEPTH_STRETCH: f32 = -0.1;
+/// How strong the perspective is: higher bunches the far rows up closer together.
+const DEPTH_PERSPECTIVE: f32 = 0.5;
+/// How bright the nearest DEPTH row is, compared with the live wave.
+const DEPTH_STRENGTH: f32 = 0.9;
 
 /// The FREQ view: low notes on the left, high on the right (20 Hz to 20 kHz, each
 /// octave the same width, the way pitch is heard), loudness up the side in decibels.
@@ -873,8 +937,8 @@ const OUT_GLOW: f32 = 0.5;
 pub const SCREEN_VIEW_WAVE: u8 = 0;
 pub const SCREEN_VIEW_FREQ: u8 = 1;
 
-/// The chips along the top of the screen. In WAVE, `OSC 1  OSC 2  MIX  OUT` switch each line on and off (Osc 2's greys out
-/// while Osc 2 is switched off). In FREQ, `FILTER  OUT` do the same for the filter's curve
+/// The chips along the top of the screen. In WAVE, `OSC  OUT` switch each line on and
+/// off, and `DEPTH` the perspective trail. In FREQ, `FILTER  OUT` do the same for the filter's curve
 /// and the output's spectrum.
 /// They're window settings, not sound, so they're saved with the patch but aren't
 /// parameters.
@@ -891,10 +955,9 @@ fn screen_chips(ui: &mut egui::Ui, row: egui::Rect, p: &SynthParams) {
                 screen_chip(ui, "FILTER", &p.screen_filter, true);
                 screen_chip(ui, "OUT", &p.screen_spectrum, true);
             } else {
-                screen_chip(ui, "OSC 1", &p.screen_osc1, true);
-                screen_chip(ui, "OSC 2", &p.screen_osc2, p.osc2_on.value());
-                screen_chip(ui, "MIX", &p.screen_mix, true);
+                screen_chip(ui, "OSC", &p.screen_mix, true);
                 screen_chip(ui, "OUT", &p.screen_out, true);
+                screen_chip(ui, "DEPTH", &p.screen_depth, true);
             }
         });
     });
@@ -993,9 +1056,6 @@ fn screen_line(
 ) {
     neon_line(painter, rect, |x| wave(x * SCREEN_CYCLES), color, thickness);
 }
-
-/// How bright the thin Osc 1 and Osc 2 lines are, behind the bold mix.
-const COMPONENT_STRENGTH: f32 = 0.5;
 
 /// How bright the newest ghost in the trail is, compared with the main wave.
 const TRAIL_STRENGTH: f32 = 0.5;
@@ -1162,16 +1222,20 @@ pub fn accent() -> egui::Color32 {
 }
 
 /// The mod colour: the knobs' mod arcs and live ticks, the mod chips, and mod mode.
-/// Pick something far round the colour wheel from the accent, so the two stand apart.
-pub const MOD_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 251, 0);
+// yellow
+// pub const MOD_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 251, 0);
+// seafoam
+// pub const MOD_COLOR: egui::Color32 = egui::Color32::from_rgb(31, 181, 122);
+// cyan
+pub const MOD_COLOR: egui::Color32 = egui::Color32::from_rgb(0, 255, 251);
 
 /// Hue is a position on the colour wheel, 0..1 (0 = red, ⅓ = green, ½ = cyan, ⅔ = blue).
 const ACCENT_HUE: f32 = 0.9;
 /// How far the screen's colour drifts round the wheel as Shape goes from sine to square.
 /// Keep it small so it still reads as the accent. Negative drifts the other way.
-const HUE_DRIFT: f32 = 0.08;
+const HUE_DRIFT: f32 = 0.04;
 /// Saturation at sine and at square. Less saturated looks paler and icier.
-const SATURATION: (f32, f32) = (0.9, 0.65);
+const SATURATION: (f32, f32) = (0.6, 0.9);
 
 /// The screen wave's colour: the accent at sine, drifting gently round the wheel (and
 /// paler) as Shape goes to square.

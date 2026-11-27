@@ -237,14 +237,15 @@ pub struct SynthParams {
     // Which lines the oscillator screen shows, from its chips. These are saved with the
     // patch but aren't parameters: the DAW doesn't list them and they can't be
     // automated. An atomic bool can be shared between threads without locking.
-    #[persist = "screen_osc1"]
-    pub screen_osc1: Arc<AtomicBool>,
-    #[persist = "screen_osc2"]
-    pub screen_osc2: Arc<AtomicBool>,
+    /// The WAVE view's OSC chip: both oscillators blended. Still saved as "screen_mix"
+    /// (its old name), so older patches keep their setting.
     #[persist = "screen_mix"]
     pub screen_mix: Arc<AtomicBool>,
     #[persist = "screen_out"]
     pub screen_out: Arc<AtomicBool>,
+    /// The WAVE view's DEPTH chip: the last moment of waves going back to the horizon.
+    #[persist = "screen_depth"]
+    pub screen_depth: Arc<AtomicBool>,
     /// The FREQ view's filter curve.
     #[persist = "screen_filter"]
     pub screen_filter: Arc<AtomicBool>,
@@ -572,10 +573,9 @@ impl Default for SynthParams {
             mod_slots: std::array::from_fn(|i| ModSlotParams::new(i + 1)),
 
             // Everything showing to start with.
-            screen_osc1: Arc::new(AtomicBool::new(true)),
-            screen_osc2: Arc::new(AtomicBool::new(true)),
             screen_mix: Arc::new(AtomicBool::new(true)),
             screen_out: Arc::new(AtomicBool::new(true)),
+            screen_depth: Arc::new(AtomicBool::new(false)),
             screen_filter: Arc::new(AtomicBool::new(true)),
             screen_spectrum: Arc::new(AtomicBool::new(true)),
             screen_view: Arc::new(AtomicU8::new(editor::SCREEN_VIEW_WAVE)),

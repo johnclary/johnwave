@@ -517,14 +517,13 @@ patch.
 drawn as tall as the note is loud. So it swells on the attack and shrinks away on the
 release.
 
-- **OSC 1** and **OSC 2**: each oscillator at its share of the Mix. They're thin and
-  faint behind MIX, or brighter when MIX is off. OSC 2 greys out while Osc 2 is off.
-- **MIX**: the two blended together, as a bold line on top. Recent mix shapes leave a
-  short fading trail behind it. The line's colour drifts as Shape goes from sine to
-  square.
+- **OSC**: both oscillators blended together, before Crush and the filter, as a bold
+  line. Recent shapes leave a short fading trail behind it. The line's colour drifts as
+  Shape goes from sine to square. (Each oscillator's own shape is the small wave beside
+  its Shape knob.)
 - **OUT**: what the synth actually played, after Crush, the filter, unison and any other
   notes, lined up with osc 1's cycles. It's a thin trace in the mod colour. With none of
-  those effects in play, it lands right on the MIX line.
+  those effects in play, it lands right on the OSC line.
 
 With nothing playing, WAVE shows just a faint centre line.
 
