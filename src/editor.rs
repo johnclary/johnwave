@@ -252,6 +252,24 @@ impl JohnwaveEditor {
             self.repaint.request_repaint();
         }
 
+        // The Modulation panel spreads out so its bottom lines up with the Filters panel's.
+        // How low each reaches is only known once it's drawn, so this uses last frame's
+        // (the Filters bottom, and where Modulation's would be without the extra space),
+        // and asks for another frame if they've moved.
+        let bottoms_id = egui::Id::unique("column_bottoms");
+        let last_bottoms: [f32; 3] = ui.ctx().data(|d| d.get_temp(bottoms_id)).unwrap_or_default();
+        // The right column does the same by making the screen taller, which pushes
+        // Unison and Crush down as they are.
+        let scope_extra = (last_bottoms[0] - last_bottoms[2]).max(0.0);
+        // The spare room goes between its sections rather than all at the bottom: half
+        // above Mod Envelope, half around the line above the LFO. The first two are whole
+        // points, and the last one takes whatever's left, so they add up to all of it.
+        let spare = (last_bottoms[0] - last_bottoms[1]).max(0.0);
+        let mod_env_gap = (spare / 2.0).floor();
+        let above_line = (spare / 4.0).floor();
+        let below_line = spare - mod_env_gap - above_line;
+        let mut bottoms = [0.0_f32; 3];
+
         // Three columns side by side, each a stack of panels.
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = COLUMN_GAP;
@@ -399,6 +417,7 @@ impl JohnwaveEditor {
                         });
                     });
                 });
+                bottoms[0] = ui.min_rect().bottom();
             });
 
             // Middle column: the amp envelope, then everything that moves things.
@@ -418,6 +437,7 @@ impl JohnwaveEditor {
                     sub_label(ui, "Source Select");
                     mod_chips(ui, &p.mod_slots);
 
+                    ui.add_space(mod_env_gap);
                     sub_label(ui, "Mod Envelope");
                     knob_row(ui, |ui| {
                         ui.add(Knob::new(&p.mod_env_attack, &setter, "A"));
@@ -426,8 +446,9 @@ impl JohnwaveEditor {
                         ui.add(Knob::new(&p.mod_env_release, &setter, "R"));
                     });
 
-                    ui.add_space(4.0);
+                    ui.add_space(4.0 + above_line);
                     ui.separator();
+                    ui.add_space(below_line);
 
                     // Only one of Rate / Sync Rate is in charge, so grey out the other.
                     let synced = p.lfo_sync.value();
@@ -448,6 +469,8 @@ impl JohnwaveEditor {
                         ui.add_enabled_ui(synced, |ui| stepper(ui, &p.lfo_division, &setter));
                     });
                 });
+                // Without the spare room spread inside it.
+                bottoms[1] = ui.min_rect().bottom() - mod_env_gap - above_line - below_line;
             });
 
             // Right column: the scope, then the effects-ish extras.
@@ -455,7 +478,7 @@ impl JohnwaveEditor {
                 // The screen sits in a panel of its own, with a tight bezel, like a
                 // monitor in its housing, and the WAVE | FREQ switch under it.
                 let title_height = panel_title(ui, "Scope").size().y;
-                let height = SCOPE_HEIGHT - title_height - SCOPE_BEZEL;
+                let height = SCOPE_HEIGHT - title_height - SCOPE_BEZEL + scope_extra;
                 panel_with(ui, "Scope", SCOPE_BEZEL, SCOPE_BEZEL, 0.0, |ui| {
                     let lines = ScreenLines {
                         phosphor: &self.phosphor,
@@ -516,8 +539,14 @@ impl JohnwaveEditor {
                         row_toggle(ui, "ON", &p.crush_on, &setter);
                     });
                 });
+                // Without the screen's extra height.
+                bottoms[2] = ui.min_rect().bottom() - scope_extra;
             });
         });
+        ui.ctx().data_mut(|d| d.insert_temp(bottoms_id, bottoms));
+        if bottoms.iter().zip(last_bottoms).any(|(now, last)| (now - last).abs() > 0.5) {
+            self.repaint.request_repaint();
+        }
 
         crate::readout::draw(ui, readout_rect);
 
