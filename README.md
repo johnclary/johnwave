@@ -54,6 +54,17 @@ If the name doesn't match, the app still opens but falls back to a silent mode
 (no audio or MIDI), with the error only in the terminal. To list the MIDI devices
 instead, run `cargo dev --backend core-audio --midi-input ""`.
 
+No keyboard handy? `tools/chord.py` opens a virtual MIDI device that holds a
+chord (one-time setup: `pip install mido python-rtmidi`). Start it first, since
+the app only connects to MIDI at launch:
+
+```sh
+python3 tools/chord.py                    # leave running; Enter toggles the chord
+cargo dev --midi-input "johnwave keys"    # in a second terminal
+```
+
+`--notes 48,52,55` picks other notes (MIDI numbers, 60 = middle C).
+
 To rebuild and relaunch on every save, use [watchexec](https://github.com/watchexec/watchexec)
 (`brew install watchexec`):
 
