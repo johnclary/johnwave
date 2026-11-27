@@ -434,8 +434,8 @@ impl JohnwaveEditor {
                     let lfo_shape = p.lfo_shape.value();
                     sub_label(ui, "LFO");
                     knob_row(ui, |ui| {
-                        ui.add(Knob::new(&p.lfo_shape, &setter, "Shape"));
                         knob_wave(ui, false, |phase| crate::lfo::wave(phase, lfo_shape, KNOB_WAVE_EDGE));
+                        ui.add(Knob::new(&p.lfo_shape, &setter, "Shape"));
                         ui.add_enabled(!synced, Knob::new(&p.lfo_rate, &setter, "Rate"));
                         // Right of centre fades the LFO in on each note, left fades it out.
                         ui.add(Knob::new(&p.lfo_fade, &setter, "Fade").bipolar());
@@ -1461,11 +1461,12 @@ fn switch<T: Enum + PartialEq + Copy + 'static>(
 ) {
     let current = param.value();
     ui.add_enabled_ui(!in_mod_mode(ui), |ui| {
-        // A thin outline around both halves, so they read as one switch.
+        // A thin outline around both halves, so they read as one switch. Flush with the
+        // buttons and as round as the chips, so the lit one fills right up to it.
+        let radius = ui.visuals().widgets.inactive.corner_radius;
         egui::Frame::new()
             .stroke(egui::Stroke::new(1.0, FAINT))
-            .corner_radius(4.0)
-            .inner_margin(2.0)
+            .corner_radius(radius)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
