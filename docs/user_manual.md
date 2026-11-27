@@ -410,7 +410,9 @@ Some starting points:
 on a thin outer ring just outside its value arc. The arc covers every position all its
 routes together can push it to, while the value arc underneath still shows where the
 knob itself is set. Even a tiny amount gets a short visible arc, and a mod-colour dot in
-the middle of the knob marks it as modulated at a glance. Pitch routes show on the
+the middle of the knob marks it as modulated at a glance. A faint slice of the same
+colour fills the knob from that dot out to the arc, so the range is easy to read from a
+distance. Pitch routes show on the
 Coarse knob, Pitch 2 routes on Osc 2's Coarse, and Detune routes on the Unison Detune
 knob.
 

@@ -47,6 +47,10 @@ pub struct KnobStyle {
     pub mod_ring_gap: f32,
     /// Radius of the mod dot in the middle of a knob that's a mod target.
     pub mod_dot_radius: f32,
+    /// How strong the mod slice is (0..1 of the mod colour): the faint wedge from the
+    /// mod dot out to the mod ring, covering the same range. `.0` at the centre, `.1`
+    /// at the ring, so it brightens toward the ring like light spilling inward.
+    pub mod_fill: (f32, f32),
     /// Thickness of the live tick: the short mod-colour line marking where the armed
     /// source is pushing the knob right now.
     pub tick_width: f32,
@@ -65,8 +69,9 @@ impl Default for KnobStyle {
             mod_color: crate::editor::MOD_COLOR,
             mod_arc_width: 2.5,
             mod_ring_gap: 1.0,
-            mod_dot_radius: 2.5,
-            tick_width: 2.0,
+            mod_dot_radius: 1.0,
+            mod_fill: (0.1, 0.22),
+            tick_width: 1.0,
         }
     }
 }
@@ -452,6 +457,33 @@ impl<P: Param> egui::Widget for Knob<'_, P> {
                 style.mod_color.gamma_multiply(ARC_OFF)
             };
 
+            // The mod range: the routes' span, widened to a few points of arc if it's
+            // tiny, so a route with a small amount is still visible. In mod mode it
+            // covers only the armed source (the x-ray view).
+            let span = self.mod_target.as_ref().and_then(|t| t.span).map(|(lo, hi)| {
+                let min_len = 0.02;
+                if hi - lo < min_len {
+                    let mid = ((lo + hi) / 2.0).clamp(min_len / 2.0, 1.0 - min_len / 2.0);
+                    (mid - min_len / 2.0, mid + min_len / 2.0)
+                } else {
+                    (lo, hi)
+                }
+            });
+
+            // The mod slice first, underneath everything: a faint wedge from the centre
+            // out to the mod ring over the same range.
+            if let Some((lo, hi)) = span {
+                let (inner, outer) = style.mod_fill;
+                painter.add(slice_mesh(
+                    center,
+                    style.mod_radius(),
+                    lo,
+                    hi,
+                    mod_color.gamma_multiply(inner),
+                    mod_color.gamma_multiply(outer),
+                ));
+            }
+
             // The faint full track.
             painter.add(egui::Shape::line(
                 arc_points(center, radius, 0.0, 1.0),
@@ -476,18 +508,8 @@ impl<P: Param> egui::Widget for Knob<'_, P> {
             }
 
             // The mod arc: its own ring just outside the value arc, drawn after the value
-            // arc's glow so it sits cleanly on top of it. Even a tiny span gets a few
-            // points of arc, so a route with a small amount is still visible. In mod mode
-            // it covers only the armed source (the x-ray view).
-            let span = self.mod_target.as_ref().and_then(|t| t.span);
+            // arc's glow so it sits cleanly on top of it.
             if let Some((lo, hi)) = span {
-                let min_len = 0.02;
-                let (lo, hi) = if hi - lo < min_len {
-                    let mid = ((lo + hi) / 2.0).clamp(min_len / 2.0, 1.0 - min_len / 2.0);
-                    (mid - min_len / 2.0, mid + min_len / 2.0)
-                } else {
-                    (lo, hi)
-                };
                 painter.add(egui::Shape::line(
                     arc_points(center, style.mod_radius(), lo, hi),
                     egui::Stroke::new(style.mod_arc_width, mod_color),
@@ -497,15 +519,15 @@ impl<P: Param> egui::Widget for Knob<'_, P> {
                 // spot even when its amount (and so its mod arc) is tiny.
                 painter.circle_filled(center, style.mod_dot_radius, mod_color);
 
-                // The live tick: where the armed source has the knob right now. A short
-                // mod-colour line across the value arc that pokes inward only, so it never
-                // cuts across the mod ring outside.
+                // The live tick: where the armed source has the knob right now. A thin
+                // mod-colour line like a clock hand, from the edge of the mod dot out to
+                // the outside of the value arc, so it never cuts across the mod ring.
                 let live = self.mod_target.as_ref().and_then(|t| t.live);
                 if let (Some(live), true) = (live, enabled) {
                     let angle = START_ANGLE + SWEEP * live;
                     let direction = egui::vec2(angle.cos(), angle.sin());
                     let outer = radius + style.arc_width / 2.0;
-                    let inner = radius - style.arc_width / 2.0 - 3.0;
+                    let inner = style.mod_dot_radius;
                     painter.line_segment(
                         [center + direction * inner, center + direction * outer],
                         egui::Stroke::new(style.tick_width, mod_color),
@@ -594,4 +616,28 @@ fn arc_points(center: egui::Pos2, radius: f32, from: f32, to: f32) -> Vec<egui::
             center + radius * egui::vec2(angle.cos(), angle.sin())
         })
         .collect()
+}
+
+/// A filled wedge from `center` out to `radius`, between two positions round the sweep
+/// (like `arc_points`), coloured `inner` at the centre blending to `outer` at the edge.
+/// It's a fan of triangles that all share the centre, so it works for any width, even
+/// past half the circle where egui's own polygon fill would go wrong.
+fn slice_mesh(
+    center: egui::Pos2,
+    radius: f32,
+    from: f32,
+    to: f32,
+    inner: egui::Color32,
+    outer: egui::Color32,
+) -> egui::Mesh {
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(center, inner);
+    for point in arc_points(center, radius, from, to) {
+        mesh.colored_vertex(point, outer);
+    }
+    // Vertex 0 is the centre; each triangle joins it to two neighbours along the edge.
+    for i in 1..mesh.vertices.len() as u32 - 1 {
+        mesh.add_triangle(0, i, i + 1);
+    }
+    mesh
 }
